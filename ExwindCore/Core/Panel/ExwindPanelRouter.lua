@@ -238,9 +238,22 @@ end)
 
 Router:RefreshState()
 
+-- 登录时 ADDON_LOADED 会逐个插件触发，大型插件环境下可达数百次；
+-- Provider 状态只会在 Provider 插件自身加载完成时变化，其余刷新都是
+-- 冗余的同步 C 调用。按名称过滤，降低登录事件链的同步执行时间。
+local PROVIDER_ADDON_NAMES = {}
+for _, addonNames in pairs(Router.ProviderAddons) do
+    for _, addonName in ipairs(addonNames) do
+        PROVIDER_ADDON_NAMES[addonName] = true
+    end
+end
+
 local watcher = CreateFrame("Frame")
 watcher:RegisterEvent("ADDON_LOADED")
 watcher:RegisterEvent("PLAYER_LOGIN")
-watcher:SetScript("OnEvent", function()
+watcher:SetScript("OnEvent", function(_, event, addonName)
+    if event == "ADDON_LOADED" and not PROVIDER_ADDON_NAMES[addonName] then
+        return
+    end
     Router:RefreshState()
 end)
