@@ -725,6 +725,10 @@ end
 
 local function SetupCooldown(cd, reverse)
     cd:SetAllPoints()
+    -- 标记为外部冷却文本插件（tullaCTC / OmniCC 等）应忽略的目标，
+    -- 与 ExwindWidgets / NameplateMarker 的既有约定保持一致。
+    cd.noCooldownCount = true
+    cd.noOCC = true
     if cd.SetHideCountdownNumbers then
         cd:SetHideCountdownNumbers(true)
     end

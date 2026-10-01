@@ -669,6 +669,8 @@ local function InitCastBarStructure(bar)
     bar.SpellText   = bar.TextFrame:CreateFontString(nil, "OVERLAY")
     bar.TimerText   = bar.TextFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     bar.Cooldown    = CreateFrame("Cooldown", nil, bar, "CooldownFrameTemplate")
+    bar.Cooldown.noCooldownCount = true
+    bar.Cooldown.noOCC = true
 
     -- 图标封装 Frame（用于样式渲染）
     local iconFrame = CreateFrame("Frame", nil, bar, "BackdropTemplate")
