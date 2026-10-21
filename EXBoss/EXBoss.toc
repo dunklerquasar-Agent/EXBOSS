@@ -3,6 +3,7 @@
 ## Notes: BOSS 技能计时 + 语音提醒
 ## Author: Exwind
 ## Version: 1.0.0
+## X-Wago-ID: vNAgrRKo
 ## RequiredDeps: ExwindCore, EXBossData, EXBOSS-Locale
 ## OptionalDeps: LibSharedMedia-3.0
 ## SavedVariables: EXBOSS12S2
@@ -20,7 +21,6 @@ Core\ExBoss_Print.lua
 Core\ExBoss_Border.lua
 Locale\Init.lua
 Modules\PullCountdown.lua
-Modules\Animation\AnimationDemo.lua
 Core\ExBoss_Changelog.lua
 Modules\Boss\Store.lua
 Modules\Boss\TimelineModeRules.lua
@@ -126,7 +126,6 @@ ExBossVoice\CountdownVoice.lua
 Modules\AuraSound\Runtime.lua
 TargetAlert\Runtime.lua
 ExBossTest\TemporaryBossPreview.lua
-ExBossTest\TemporaryColorComparison.lua
 
 # ── 6. GUI 层
 Modules\TrashCD\Bootstrap.lua

@@ -2,7 +2,7 @@
 -- =============================================================
 -- ExBossGUI/PanelFrame.lua
 -- 主面板骨架：窗口 + 顶部 Tab + 左侧导航框架 + 右侧内容区
--- 无任何外部依赖（不需要 ExwindTools / ExwindGrid / ExwindFactory）
+-- 使用 Core 统一宿主与 EXUI 控件；页面内容由各 V2 owner 管理。
 -- =============================================================
 
 
@@ -25,18 +25,19 @@ local CONTENT_X = LEFT_W + 10
 local OUTER_STRIP_W = 140
 local EMBED_TOP_Y    = -36
 
--- [卡片/Grid 迁移边界：顶级路由]
+-- [V2 页面边界：顶级路由]
 -- TABS/redirect/dispatch 顺序与 key 是导航业务合同，禁止因卡片外观迁移改名、重排、恢复历史页或改变可达性。
 -- 页面内容卡片只在各 Page 内迁移；本文件继续只拥有 Unified/fallback 宿主与切页释放。
 local TABS = {
-    { key = "home",          label = L["首页"] },
-    { key = "voicepack",     label = L["语音/配置"] },
-    { key = "boss",          label = L["副本(首领)"] },
-    { key = "trash",         label = L["副本(小怪)"] },
-    { key = "tools",         label = L["小工具"] },
-    { key = "globalsettings",label = L["设置"] },
-    { key = "importexport",  label = L["导入导出"] },
-    { key = "about",         label = L["关于插件"] },
+-- icon 传统一图标库的 ID（不是路径）：选项组只对 ID 图标跟随文字色上色（未选中变暗）。
+    { key = "home",          label = L["首页"], icon = "house" },
+    { key = "voicepack",     label = L["语音/配置"], icon = "headphones" },
+    { key = "boss",          label = L["副本(首领)"], icon = "castle" },
+    { key = "trash",         label = L["副本(小怪)"], icon = "list" },
+    { key = "tools",         label = L["小工具"], icon = "toolbox" },
+    { key = "globalsettings",label = L["设置"], icon = "settings" },
+    { key = "importexport",  label = L["导入导出"], icon = "download" },
+    { key = "about",         label = L["关于插件"], icon = "info" },
 }
 
 local EMBED_TABS = {
@@ -204,14 +205,6 @@ end
 
 ExBoss.UI.ApplyModernScrollBarSkin = ApplyModernScrollBarSkin
 
-local function GetSidebarFontPath()
-    local ET = _G.ExwindTools
-    if ET and type(ET.MAIN_FONT) == "string" and ET.MAIN_FONT ~= "" then
-        return ET.MAIN_FONT
-    end
-    return STANDARD_TEXT_FONT or "Fonts\\FRIZQT__.TTF"
-end
-
 local function NormalizeSidebarSearchText(text)
     local value = tostring(text or "")
     value = value:gsub("^%s+", ""):gsub("%s+$", "")
@@ -229,81 +222,24 @@ end
 
 local function CreateSidebarSearchBox(parent, initialText, opts)
     local config = type(opts) == "table" and opts or {}
-    local edit = EXUI:CreateEditBox(parent, initialText or "", 1, config.height or 28, nil, {})
-    edit:SetHeight(config.height or 28)
-    if edit.SetAutoFocus then
-        edit:SetAutoFocus(false)
-    end
-    if edit.SetFont then
-        edit:SetFont(GetSidebarFontPath(), 13, "")
-    end
-    if edit.SetTextColor then
-        edit:SetTextColor(unpack(GC.text))
-    end
-    if edit.SetCursorColor then
-        edit:SetCursorColor(0.0, 0.72, 1.0)
-    end
-    if edit.SetTextInsets then
-        edit:SetTextInsets(10, 10, 0, 0)
-    end
-    edit:SetBackdrop({
-        bgFile = "Interface\\Buttons\\WHITE8X8",
-        edgeFile = "Interface\\Buttons\\WHITE8X8",
-        edgeSize = 1,
-        insets = { left = 1, right = 1, top = 1, bottom = 1 },
+    return EXUI:CreateSearchBox(parent, initialText or "", 1, config.height or 30, {
+        onChanged = config.onChanged,
     })
-    edit:SetBackdropColor(unpack(GC.input))
-    edit:SetBackdropBorderColor(unpack(GC.inputHoverBorder))
-
-    local placeholder = EXUI:CreateVisualFontString(edit, EXFONTFRAME)
-    placeholder:SetPoint("LEFT", 10, 0)
-    placeholder:SetPoint("RIGHT", -10, 0)
-    placeholder:SetJustifyH("LEFT")
-    placeholder:SetFont(GetSidebarFontPath(), 13, "")
-    placeholder:SetTextColor(unpack(GC.textPlaceholder))
-    placeholder:SetText(config.placeholder or L["搜索..."])
-    edit._placeholder = placeholder
-
-    local function RefreshPlaceholder(self)
-        if self:GetText() == "" and not self:HasFocus() then
-            self._placeholder:Show()
-        else
-            self._placeholder:Hide()
-        end
-    end
-
-    edit:SetScript("OnEscapePressed", function(self)
-        self:ClearFocus()
-    end)
-    edit:SetScript("OnEnterPressed", function(self)
-        self:ClearFocus()
-    end)
-    edit:SetScript("OnEditFocusGained", function(self)
-        self:SetBackdropBorderColor(unpack(GC.accent))
-        RefreshPlaceholder(self)
-    end)
-    edit:SetScript("OnEditFocusLost", function(self)
-        self:SetBackdropBorderColor(unpack(GC.inputHoverBorder))
-        RefreshPlaceholder(self)
-    end)
-    edit:SetScript("OnTextChanged", function(self, userInput)
-        RefreshPlaceholder(self)
-        if config.onChanged then
-            config.onChanged(self:GetText(), userInput, self)
-        end
-    end)
-
-    edit:SetText(initialText or "")
-    RefreshPlaceholder(edit)
-    return edit
 end
 
 local function CreateSidebarCategoryHeader(parent)
     return EXUI:CreateSidebarNavigationHeader(parent, "", { height = 26 })
 end
 
-local function CreateSidebarModuleButton(parent)
-    local btn = EXUI:CreateSidebarNavigationButton(parent, "", nil, { level = 1, height = 28 })
+-- opts.selectedPresentation 直接转给公共侧栏导航按钮（nil/"rail" = 默认的淡底+左侧指示条，
+-- "outline" = 只描边）。按钮来自共享池，呈现选项每次创建都要重新传，所以不在这里写死默认值。
+local function CreateSidebarModuleButton(parent, opts)
+    local config = type(opts) == "table" and opts or {}
+    local btn = EXUI:CreateSidebarNavigationButton(parent, "", nil, {
+        level = 1,
+        height = 28,
+        selectedPresentation = config.selectedPresentation,
+    })
     btn:SetHeight(28)
     return btn
 end
@@ -429,11 +365,11 @@ local function ApplySpecialPageHostGeometry()
         local navWidth = IsUnifiedMode() and math.max(1, unifiedHosts.navHost:GetWidth() or 0)
             or (width <= 1180 and 220 or math.max(248, math.min(320, width * 0.21)))
         local top = IsUnifiedMode() and 0 or (TAB_BAR_Y - TAB_H - 4)
-        leftFrame:ClearAllPoints()
+        if not mainFrame._prototypeHosts then leftFrame:ClearAllPoints() end
         leftFrame:SetPoint("TOPLEFT", host, "TOPLEFT", 0, top)
         leftFrame:SetPoint("BOTTOMLEFT", host, "BOTTOMLEFT", 0, 0)
         leftFrame:SetWidth(navWidth)
-        contentFrame:ClearAllPoints()
+        if not mainFrame._prototypeHosts then contentFrame:ClearAllPoints() end
         contentFrame:SetPoint("TOPLEFT", host, "TOPLEFT", navWidth, top)
         contentFrame:SetPoint("BOTTOMRIGHT", rightHost, "BOTTOMRIGHT", 0, 0)
         leftFrame:SetBackdropColor(unpack(GC.panel))
@@ -466,14 +402,21 @@ local function ApplySpecialPageHostGeometry()
     end
 end
 
+local function HideContentPages()
+    for _, key in ipairs({
+        "TimerBarPage", "BunBarPage", "CountdownPage", "FlashTextMediumPage",
+        "RingProgressPage", "IconAlertPage", "CastProgressBarPage", "ExtraShieldBarPage",
+        "DungeonExtrasPage", "BossPage", "FixedTimelinePage", "HomePage",
+        "GlobalSettingsPage", "ImportExportPage", "VoicePackPage", "MDTPage",
+        "OtherVoicePage", "ToolsPage", "TrashCDPage",
+    }) do
+        local page = Panel[key]
+        if page and page.Hide then page:Hide() end
+    end
+end
+
 local function RefreshContent()
     if not contentFrame then return end
-
-    -- TrashCD 在 Unified 模式会把既有“副本/法术列表”挂到 Shell B；离开该页
-    -- 必须主动收起，不能依赖原 content root 的 Hide（两个 pane 已不再是其 child）。
-    if currentTab ~= "trash" and TrashCDPage and TrashCDPage.Hide then
-        TrashCDPage:Hide()
-    end
 
     if IsEmbedTab(currentTab) then
         SetOwnTopTabBarShown(false)
@@ -490,13 +433,13 @@ local function RefreshContent()
     if mainFrame then
         local useLeft = ShouldUseLeftNav(currentTab)
         local expectFull = not useLeft
-        if IsUnifiedMode() then
+        if IsUnifiedMode() and currentTab ~= "boss" and currentTab ~= "trash" then
             leftFrame:ClearAllPoints()
             leftFrame:SetAllPoints(unifiedHosts.navHost)
             contentFrame:ClearAllPoints()
             contentFrame:SetAllPoints(useLeft and unifiedHosts.contentBodyHost or unifiedHosts.fullContentHost)
             contentFrame._fullWidthMode = expectFull
-        elseif contentFrame._fullWidthMode ~= expectFull then
+        elseif not IsUnifiedMode() and contentFrame._fullWidthMode ~= expectFull then
             local contentTopY = TAB_BAR_Y - TAB_H - 4
             contentFrame:ClearAllPoints()
             if useLeft then
@@ -531,7 +474,7 @@ local function RefreshContent()
         contentFrame._placeholder:Hide()
     end
 
-    -- 隐藏各设置页的 scrollFrame（切 Tab 时清理）
+    -- 切页与关闭窗口共用各页面的释放入口。
     local BossPage       = ExBoss.UI.Panel.BossPage
     local FixedTimelinePage = ExBoss.UI.Panel.FixedTimelinePage
     local HomePage       = ExBoss.UI.Panel.HomePage
@@ -540,43 +483,12 @@ local function RefreshContent()
     local MDTPage = ExBoss.UI.Panel.MDTPage
     local OtherVoicePage = ExBoss.UI.Panel.OtherVoicePage
     local ToolsPage = ExBoss.UI.Panel.ToolsPage
-    local TimerBarPage   = ExBoss.UI.Panel.TimerBarPage
-    local BunBarPage     = ExBoss.UI.Panel.BunBarPage
-    local CountdownPage  = ExBoss.UI.Panel.CountdownPage
-    local FlashTextMediumPage = ExBoss.UI.Panel.FlashTextMediumPage
-    local RingProgressPage = ExBoss.UI.Panel.RingProgressPage
-    local IconAlertPage = ExBoss.UI.Panel.IconAlertPage
-    local CastProgressBarPage = ExBoss.UI.Panel.CastProgressBarPage
-    local ExtraShieldBarPage = ExBoss.UI.Panel.ExtraShieldBarPage
     local VoicePackPage  = ExBoss.UI.Panel.VoicePackPage
     local TrashCDPage    = ExBoss.UI.Panel.TrashCDPage
-    for _, page in ipairs({
-        TimerBarPage,
-        BunBarPage,
-        CountdownPage,
-        FlashTextMediumPage,
-        RingProgressPage,
-        IconAlertPage,
-        CastProgressBarPage,
-        ExtraShieldBarPage,
-        ExBoss.UI.Panel.DungeonExtrasPage,
-    }) do
-        if page and page._scrollFrame then page._scrollFrame:Hide() end
-        if page and page.Hide then page:Hide() end
-    end
-    if BossPage and BossPage.Hide then BossPage:Hide() end
-    if FixedTimelinePage and FixedTimelinePage.Hide then FixedTimelinePage:Hide() end
-    if HomePage and HomePage.Hide then HomePage:Hide() end
-    if GlobalSettingsPage and GlobalSettingsPage.Hide then GlobalSettingsPage:Hide() end
-    if ImportExportPage and ImportExportPage.Hide then ImportExportPage:Hide() end
-    if VoicePackPage and VoicePackPage.Hide then VoicePackPage:Hide() end
-    if MDTPage and MDTPage.Hide then MDTPage:Hide() end
-    if OtherVoicePage and OtherVoicePage.Hide then OtherVoicePage:Hide() end
-    if ToolsPage and ToolsPage.Hide then ToolsPage:Hide() end
-    if TrashCDPage and TrashCDPage.Hide then TrashCDPage:Hide() end
+    HideContentPages()
 
     -- 分发各 Tab
-    if currentTab == "home" then
+    if currentTab == "home" or currentTab == "about" then
         leftFrame:Hide()
         if HomePage and HomePage.Render then
             HomePage:Render(contentFrame)
@@ -747,6 +659,11 @@ local function FlushFocusedEditBox()
     end
 end
 
+local function OnPanelHidden()
+    FlushFocusedEditBox()
+    HideContentPages()
+end
+
 -- =============================================================
 -- 窗口创建（懒加载，只执行一次）
 -- =============================================================
@@ -755,9 +672,9 @@ local function CreateUnifiedPanel()
     if mainFrame then return end
     local shellFrame = unifiedHosts.contentHost:GetParent()
     mainFrame = CreateFrame("Frame", nil, shellFrame, "BackdropTemplate")
-    mainFrame:SetPoint("TOPLEFT", unifiedHosts.navHost, "TOPLEFT", 0, 0)
-    mainFrame:SetPoint("BOTTOMRIGHT", unifiedHosts.contentHost, "BOTTOMRIGHT", 0, 0)
+    mainFrame:SetAllPoints(unifiedHosts.fullContentHost)
     mainFrame:SetFrameStrata(shellFrame:GetFrameStrata())
+    mainFrame:SetScript("OnHide", OnPanelHidden)
     mainFrame:Hide()
 
     leftFrame = CreateFrame("Frame", nil, mainFrame, "BackdropTemplate")
@@ -801,9 +718,7 @@ local function CreatePanel()
     mainFrame:RegisterForDrag("LeftButton")
     mainFrame:SetScript("OnDragStart", function(self) self:StartMoving() end)
     mainFrame:SetScript("OnDragStop",  function(self) self:StopMovingOrSizing() end)
-    mainFrame:SetScript("OnHide", function()
-        FlushFocusedEditBox()
-    end)
+    mainFrame:SetScript("OnHide", OnPanelHidden)
     mainFrame:Hide()
 
     -- 支持 ESC 关闭
@@ -837,34 +752,31 @@ local function CreatePanel()
     scaleLabel:SetText(L["缩放"])
     scaleLabel:SetTextColor(unpack(GC.textDim))
 
-    local scaleDropdown = CreateFrame("DropdownButton", nil, mainFrame, "WowStyle1DropdownTemplate")
-    scaleDropdown:SetWidth(100)
-    scaleDropdown:SetPoint("LEFT", scaleLabel, "RIGHT", 6, 0)
-    scaleDropdown:SetFrameLevel(mainFrame:GetFrameLevel() + 30)
-
+    local scaleDropdown
     local function ApplyPanelScale(pct)
         if EXBOSS12S2 and EXBOSS12S2.ui and EXBOSS12S2.ui.general then
             EXBOSS12S2.ui.general.panelScale = pct
         end
         mainFrame:SetScale(pct / 100)
         scaleDropdown:SetText(pct .. "%")
-        scaleDropdown._currentPct = pct
+        scaleDropdown._currentValue = pct
     end
     mainFrame._applyPanelScale = ApplyPanelScale
 
     local scaleOptions = { 70, 75, 80, 85, 90, 95, 100, 105, 110 }
-    scaleDropdown:SetupMenu(function(self, rootDescription)
-        for _, pct in ipairs(scaleOptions) do
-            rootDescription:CreateRadio(pct .. "%",
-                function() return self._currentPct == pct end,
-                function() ApplyPanelScale(pct) end
-            )
-        end
-    end)
+    local scaleItems = {}
+    for _, pct in ipairs(scaleOptions) do
+        scaleItems[#scaleItems + 1] = { pct .. "%", pct }
+    end
+    scaleDropdown = EXUI:CreateDropdown(mainFrame, 100, "", scaleItems, 100, function(pct)
+        ApplyPanelScale(pct)
+    end, false)
+    scaleDropdown:SetPoint("LEFT", scaleLabel, "RIGHT", 6, 0)
+    scaleDropdown:SetFrameLevel(mainFrame:GetFrameLevel() + 30)
 
     local initPct = (EXBOSS12S2 and EXBOSS12S2.ui and EXBOSS12S2.ui.general and EXBOSS12S2.ui.general.panelScale) or 100
     initPct = math.max(70, math.min(110, initPct))
-    scaleDropdown._currentPct = initPct
+    scaleDropdown._currentValue = initPct
     scaleDropdown:SetText(initPct .. "%")
     mainFrame:SetScale(initPct / 100)
 
@@ -1035,16 +947,13 @@ local function CreatePanel()
     statusText:SetText(L["/exb  打开/关闭    |    /exb edit  编辑模式"])
     Panel.statusText = statusText
 
-    local changelogBtn = CreateFrame("Button", nil, mainFrame, "UIPanelButtonTemplate")
-    changelogBtn:SetSize(88, 22)
-    changelogBtn:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -12, 6)
-    changelogBtn:SetFrameLevel(mainFrame:GetFrameLevel() + 40)
-    changelogBtn:SetText(L["更新日志"])
-    changelogBtn:SetScript("OnClick", function()
+    local changelogBtn = EXUI:CreateButton(mainFrame, 88, 22, L["更新日志"], function()
         if ExBoss and ExBoss.ShowChangelog then
             ExBoss:ShowChangelog({ markShown = true })
         end
-    end)
+    end, { compact = true })
+    changelogBtn:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -12, 6)
+    changelogBtn:SetFrameLevel(mainFrame:GetFrameLevel() + 40)
     Panel.changelogBtn = changelogBtn
 
     Panel._frame = mainFrame
@@ -1068,8 +977,12 @@ end
 function Panel:RelayoutUnified()
     if not IsUnifiedMode() or not mainFrame then return end
     mainFrame:ClearAllPoints()
-    mainFrame:SetPoint("TOPLEFT", unifiedHosts.navHost, "TOPLEFT", 0, 0)
-    mainFrame:SetPoint("BOTTOMRIGHT", unifiedHosts.contentHost, "BOTTOMRIGHT", 0, 0)
+    if unifiedPanel.LayoutMode == "tabs_split" then
+        mainFrame:SetPoint("TOPLEFT", unifiedHosts.navHost, "TOPLEFT", 0, 0)
+        mainFrame:SetPoint("BOTTOMRIGHT", unifiedHosts.contentHost, "BOTTOMRIGHT", 0, 0)
+    else
+        mainFrame:SetAllPoints(unifiedHosts.fullContentHost)
+    end
     ApplySpecialPageHostGeometry()
 end
 
@@ -1077,7 +990,7 @@ function Panel:RefreshUnifiedTabs()
     if not IsUnifiedMode() then return end
     unifiedPanel:SetTopTabs("boss", BuildVisibleTabs(), currentTab, function(tabKey)
         unifiedPanel:SelectProvider("boss", { tab = tabKey })
-    end)
+    end, { choiceGroup = true })
 end
 
 function Panel:Toggle()
@@ -1180,6 +1093,13 @@ function Panel:SetTab(tabKey)
     currentTab = ResolveSafeTab(requested)
     if IsUnifiedMode() then
         unifiedPanel:SaveActiveRoute("boss", { tab = currentTab })
+        if unifiedPanel.ActiveProvider == "boss" then
+            local provider = unifiedPanel.Providers.boss
+            local mode = provider:GetLayoutMode({ tab = currentTab })
+            if unifiedPanel.LayoutMode ~= mode then
+                unifiedPanel:ApplyLayout(mode, { showTabs = provider.hasTopTabs, navRatio = provider.navRatio })
+            end
+        end
         Panel:RefreshUnifiedTabs()
     end
     if mainFrame and mainFrame:IsShown() then

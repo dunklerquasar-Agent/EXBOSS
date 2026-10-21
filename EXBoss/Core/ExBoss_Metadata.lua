@@ -3,13 +3,61 @@
 -- 请勿手动通过 Git 提交修改此文件中的版本号，除非你是为了测试。
 
 ExBoss_MetaData = {
-    version = "v26.9.24.2243",
+    version = "v26.10.20.1848",
     changelog = {
-        version = "v26.9.15.1537",
-        title = "v26.9.15.1537 更新日志",
-        publishedAt = "2026-09-15 15:37",
+        version = "v26.10.18.1915",
+        title = "v26.10.18.1915 更新日志",
+        publishedAt = "2026-10-18 19:15",
         fontSize = 14,
         content = [[
+@H1@ v26.10.18.1915
+
+@CN@ @H2@ 渲染引擎
+@CN@ - 所有插件升级并统一使用V2渲染
+@CN@ - 删除所有V1和初代GRID代码
+@CN@ - 删除网格布局概念和在线编辑器
+@CN@ - 如果您是开发者并使用了我们EXCORE旧版的渲染方案需要同时升级 并没有保留任何兼容或是桥接
+
+@CN@ @H2@ EXBOSS
+@CN@ - 重做首领/小怪页面 解决了大量性能问题 同时维持6ms预算的异步让出
+@CN@ - 升级所有施法相关推理到12.1.5
+@CN@ - 更新所有小怪/BOSS施法时间
+@CN@ - 更新所有小怪内置CD (如有问题请持续反馈)
+
+@EN@ @H2@ Rendering Engine
+@EN@ - Upgraded all addons to use V2 rendering
+@EN@ - Removed all V1 and original GRID code
+@EN@ - Removed the grid layout system and online editor
+@EN@ - Developers using the old EXCORE rendering system must upgrade as well. No compatibility or bridging support has been retained
+
+@EN@ @H2@ EXBOSS
+@EN@ - Rebuilt the boss/trash pages, fixing numerous performance issues while retaining asynchronous yielding with a 6ms budget
+@EN@ - Updated all cast-related inference logic for 12.1.5
+@EN@ - Updated cast times for all trash mobs and bosses
+@EN@ - Updated all trash mobs' internal cooldowns (please keep reporting any issues)
+
+@H1@ v26.10.5.2034
+
+@CN@ @H2@ 界面全面改版
+@CN@ - 设置界面整体换新：所有页面改成卡片 / 列表式布局，统一颜色系统、圆角和层次感，滚动条、下拉框、开关、按钮全部换成新版控件
+@CN@ - GRID渲染引擎升级到4.0版本 (5.0版本会在月中左右到来)
+@CN@ - 首页新增致谢与联系方式入口（还在施工中）
+@CN@ - 确认弹窗不再借用暴雪原生弹窗，避免了许多调用链污染问题
+
+@CN@ @H2@ 配置系统
+@CN@ - 新增外观配置方案管理：可以复制/删除外观方案，切换后会提示是否立即重载生效
+@CN@ - 现在可以根据天赋自动切换不同的配置和外观方案
+
+@EN@ @H2@ Complete UI Overhaul
+@EN@ - Redesigned the settings UI: all pages now use card / list layouts with consistent colors, rounded corners, and visual hierarchy. Scrollbars, dropdowns, toggles, and buttons all use new controls
+@EN@ - Upgraded the GRID rendering engine to version 4.0 (version 5.0 is expected around mid-month)
+@EN@ - Added credits and contact links to the home page (still under construction)
+@EN@ - Confirmation dialogs no longer use Blizzard's native popups, avoiding many call-chain taint issues
+
+@EN@ @H2@ Profile System
+@EN@ - Added appearance profile management: duplicate/delete appearance profiles, with a prompt to reload immediately after switching
+@EN@ - Settings and appearance profiles can now switch automatically based on talents
+
 @H1@ v26.9.15.1537
 
 @CN@ @H2@ 通用
