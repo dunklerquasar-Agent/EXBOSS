@@ -8,6 +8,7 @@
 
 FixedTimelineBosses.lua
 EncounterData.lua
+KithixRaid.lua
 EncounterWarningRules.lua
 
 HealthTextRules.lua
