@@ -85,10 +85,12 @@ function EXUI:CreateVisualTexture(parent, profile, templateName)
     return self:ApplyVisualLayer(texture, layer, parent)
 end
 
-function EXUI:CreateVisualFontString(parent, profile, templateName)
+-- overflow：文字放不下时的处理。默认 "wrap" 换行；只有登记过的位置（光环名等）才传 "truncate" 出省略号。
+function EXUI:CreateVisualFontString(parent, profile, templateName, overflow)
     if not parent or not parent.CreateFontString then return nil end
     local layer = self:GetVisualLayer(profile)
     local text = parent:CreateFontString(nil, layer.drawLayer, templateName, layer.subLevel)
+    text:SetWordWrap(overflow ~= "truncate")
     return self:ApplyVisualLayer(text, layer, parent)
 end
 
@@ -201,7 +203,7 @@ function EXUI:SetEditModeVisualLayerShown(host, shown, profile, moduleTitle, tit
     -- sibling Frame，只解决跨 Cooldown/StatusBar 的绘制层级，不拥有鼠标。
     titleHost:SetSize(layer.frame:GetWidth(), titleFontSize + 4)
     titleHost:SetPoint("BOTTOM", layer.frame, "TOP", 0, 2)
-    titleHost:SetFrameStrata("TOOLTIP")
+    titleHost:SetFrameStrata(profile and profile.titleStrata or "TOOLTIP")
     titleHost:SetFrameLevel(1000)
     if visible then
         -- TimerBar 中已在 PTR 可见的简中文字由 EXDB:ApplyFont + LSM 的“默认”字体

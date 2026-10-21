@@ -286,7 +286,17 @@ local function ApplyTextSlot(item, slotID, slot)
     widget:SetStylePositionOverride(0, 0)
     widget:ResetSecretText()
     widget:ApplyStyle(style)
-    widget:SetText(slot.text or "")
+    if slot.durationObject ~= nil then
+        widget:SetDurationBinding(slot.durationObject, slot.durationOptions)
+    elseif slot.secretDuration ~= nil then
+        widget:SetDurationBinding(slot.secretDuration, slot.durationOptions)
+    elseif slot.secretText == true then
+        widget:SetSecretText(slot.text)
+    else
+        widget:SetText(slot.text or "")
+    end
+    if type(slot.color) == "table" then widget:SetColor(slot.color) end
+    if slot.hasColorComponents == true then widget:SetColorComponents(slot.colorComponents) end
     widget:SetBounds(bounds.right - bounds.left, bounds.top - bounds.bottom)
     local anchor = ResolveTextSlotAnchor(slot)
     widget:SetAnchor(anchor.point, item.root, anchor.relativePoint, anchor.x, anchor.y)
@@ -427,11 +437,15 @@ function EXUI:CreateMaterialCollection(parent, interactionMode, moduleKey, callb
         itemsByID = {}, currentItems = {}, currentLayout = nil, itemWidth = 1, itemHeight = 1, released = false,
     }
     collection.layout = EXUI:CreateWidgetLayout(parent, {})
+    EXUI:InitializeCollectionVisualAnimations(collection)
 
     function collection:AcquireItem(itemID)
         if type(itemID) ~= "string" or itemID == "" then error("MaterialCollection itemID must be non-empty string", 2) end
         local item = self.itemsByID[itemID]
-        if item then return item end
+        if item then
+            if self:IsItemVisualRetiring(itemID) then self:StopItemVisualAnimation(itemID) end
+            return item
+        end
         item = NewItem(self, itemID)
         self.itemsByID[itemID] = item
         return item
@@ -439,18 +453,24 @@ function EXUI:CreateMaterialCollection(parent, interactionMode, moduleKey, callb
 
     function collection:ApplyItem(item, presentation)
         if not item or not item.widget then error("MaterialCollection ApplyItem requires an acquired item", 2) end
+        if self:IsItemVisualRetiring(item.id) then self:StopItemVisualAnimation(item.id) end
         if type(presentation) ~= "table" then error("MaterialCollection presentation must be table", 2) end
         item.presentation = presentation
         item.declaredBounds = RequireDeclaredBounds(presentation)
         item.localOffset = ResolveLocalOffset(presentation)
         item.widget:ApplyPresentation(presentation)
+        if presentation.hasColorComponents == true then item.widget:SetColorComponents(presentation.colorComponents) end
         item.bodyWidth, item.bodyHeight = math.max(1, item.widget:GetWidth() or 1), math.max(1, item.widget:GetHeight() or 1)
         item.root:SetSize(item.bodyWidth, item.bodyHeight)
         ApplyLocalOffset(item, item.localOffset)
         ConfigurePanelInteraction(self, item, presentation.interaction)
         ApplyTextSlots(self, item, presentation)
         item.regions:SetConfigContextID(presentation.regionConfigContextID)
-        item.regions:Apply(presentation.regionElements)
+        item.regions:Apply(presentation.regionElements, presentation.elementContent)
+        if item.visualEffects then
+            EXUI:ApplyCollectionItemVisualEffects(item.root, item.visualEffects, item.bodyWidth, item.bodyHeight)
+        end
+        if item._collectionClickSpec then EXUI:ApplyCollectionItemClick(item, item._collectionClickSpec) end
         return item
     end
 
@@ -466,7 +486,9 @@ function EXUI:CreateMaterialCollection(parent, interactionMode, moduleKey, callb
         if width then self.itemWidth, self.itemHeight = width, height end
         local wanted = {}
         for _, item in ipairs(items or {}) do wanted[item.id] = true end
-        for id, item in pairs(self.itemsByID) do if not wanted[id] then item.root:Hide() end end
+        for id, item in pairs(self.itemsByID) do
+            if not wanted[id] and not self:IsItemVisualRetiring(id) then item.root:Hide() end
+        end
         local layoutStyle = CopyLayout(layout, self.contentCenter)
         self.layout:ApplyStyle(layoutStyle)
         self.layout:SetSemanticItems(items or {}, self.itemWidth, self.itemHeight)
@@ -524,10 +546,28 @@ function EXUI:CreateMaterialCollection(parent, interactionMode, moduleKey, callb
         return self.itemsByID
     end
 
+    function collection:SetItemClickAction(itemID, spec)
+        local item = self.itemsByID[itemID]
+        if not item or not item.root then return false end
+        if self:IsItemVisualRetiring(itemID) then return false end
+        return EXUI:ApplyCollectionItemClick(item, spec)
+    end
+
+    function collection:SetItemVisualEffects(itemID, effects)
+        local item = self.itemsByID[itemID]
+        if not item or not item.root then return false end
+        item.visualEffects = type(effects) == "table" and effects or nil
+        EXUI:ApplyCollectionItemVisualEffects(item.root, item.visualEffects, item.bodyWidth, item.bodyHeight)
+        return true
+    end
+
     function collection:ReleaseItem(itemID)
         local item = self.itemsByID[itemID]
         if not item then return end
+        self:StopItemVisualAnimation(itemID)
         self.itemsByID[itemID] = nil
+        EXUI:ReleaseCollectionItemClick(item)
+        EXUI:ReleaseCollectionItemVisualEffects(item.root)
         ResetOverlay(item.interactionOverlay, true)
         if item.regions then item.regions:Release() end
         for slotID in pairs(item.textWidgets or {}) do ResetTextSlot(item, slotID, true) end
@@ -537,6 +577,7 @@ function EXUI:CreateMaterialCollection(parent, interactionMode, moduleKey, callb
         item.widget:Release()
         ReleaseItemRoot(item.root)
         item.widget, item.root, item.presentation, item.declaredBounds, item.localOffset, item.interactionOverlay = nil, nil, nil, nil, nil, nil
+        item.visualEffects = nil
         item.textWidgets, item.textInteractionOverlays, item.textSlotBounds, item.textSlotAnchors, item.regions = nil, nil, nil, nil, nil
     end
     function collection:Release()

@@ -3,6 +3,73 @@
 local L = ExwindLocale and ExwindLocale.NewLocale("zhCN", true)
 if not L then return end
 
+-- ExwindTools localization
+L["全部"] = true
+L["编辑"] = true
+L["布局"] = true
+L["清空"] = true
+L["删除组件"] = true
+L["试听 / 停止"] = true
+L["行"] = true
+L["选择样式"] = true
+L["已选 %d/%d"] = true
+L["应用"] = true
+L["自定义预览背景"] = true
+L["施法成功"] = true
+L["左下"] = true
+L["左上"] = true
+L["右下"] = true
+L["右上"] = true
+L["中下"] = true
+L["命令未注册或不能由插件直接执行"] = true
+L["开发中"] = true
+L["音效 %d"] = true
+L["变量与预览"] = true
+L["操作"] = true
+L["测试播放"] = true
+L["常用设置"] = true
+L["动画时长"] = true
+L["法术 ID"] = true
+L["法术冷却结束时，在屏幕中央放大淡出一次法术图标。"] = true
+L["法术手册"] = true
+L["副本外"] = true
+L["工具"] = true
+L["喊话设置"] = true
+L["黑名单 NPC"] = true
+L["忽略法术列表"] = true
+L["记录预览"] = true
+L["技能就绪闪现"] = true
+L["监控法术"] = true
+L["阶段"] = true
+L["阶段二"] = true
+L["阶段三"] = true
+L["阶段四"] = true
+L["阶段一"] = true
+L["结束缩放"] = true
+L["列表中任一法术冷却结束时播放一次闪现。"] = true
+L["配置分享"] = true
+L["起始缩放"] = true
+L["闪现外观"] = true
+L["伤害统计"] = true
+L["声音提示"] = true
+L["输入法术 ID"] = true
+L["数值字体跟随名称"] = true
+L["提示内容"] = true
+L["添加新的监控法术"] = true
+L["添加音效"] = true
+L["填入法术 ID 后按添加或回车"] = true
+L["无效法术 ID"] = true
+L["无效记录，已保持原值"] = true
+L["显示格式"] = true
+L["现有法术列表不是表，已保持原值"] = true
+L["有效路径示例：Interface\\AddOns\\MySoundAddon\\Assets\\example.ogg"] = true
+L["阈值 (%)"] = true
+L["自定义图标"] = true
+L["自定义音效路径"] = true
+L["NPC ID"] = true
+L["NPC ID = 法术 ID"] = true
+L["NPCID = SpellID"] = true
+
 -- 中文为默认语言，所有 key 设为 true（直接用 key 本身作为显示文字）
 -- 此文件会随翻译工作推进持续追加，无需手动维护翻译值
 -- added 2026-08-17 19:54
@@ -1295,8 +1362,6 @@ L["启用私人光环监控"] = true
 L["当前对象没有私人光环法术。"] = true
 L["共%d个私人光环法术"] = true
 L["encounterID:%s  共%d个私人光环法术"] = true
-L["ExwindGrid 不可用，无法渲染私人光环设置。"] = true
-L["ExwindGrid 不可用，无法渲染设置区。"] = true
 L["提供三种重置方式：\n1) 仅重置外观设置\n2) 重置所有配置（不包含外观）\n3) 清除全部Settings（包含外观）"] = true
 L["推荐先使用“仅Reset外观Settings”。“仅Reset外观Settings”只ResetTimer Bar/Bun Bar/Countdown/Flash Text与ColorProfile。\n“Reset所有配置（不包含外观）”会清空General Settings、语音配置、Skill配置与TimelineSettings，但保留外观。\n“清除全部Settings（包含外观）”会把 EXBoss 的全部配置重置并恢复到初始状态。"] = true
 L["Reset所有配置（不包含外观）"] = true
@@ -1636,9 +1701,7 @@ L["稍后重载"] = true
 L["ExwindExport 核心加载完成"] = true
 L["无法识别该框架"] = true
 L["|cffff0000[ExwindFactory] 初始化错误 [%s]: %s|r"] = true
-L["[ExwindGrid] 错误: ExwindTools.lua 必须在 ExwindGrid.lua 之前加载!"] = true
 L["未注册的自定义组件"] = true
-L["|cff00ffff[ExwindGrid]|r 编辑模式已激活。请在左侧点击行号进行管理。"] = true
 L["插入行"] = true
 L["删除行"] = true
 L["导出导入包"] = true
@@ -1682,15 +1745,7 @@ L["Slider 最小值:"] = true
 L["Slider 最大值:"] = true
 L["保存设置"] = true
 L["|cffff0000删除组件|r"] = true
-L["[ExwindGrid] 错误: 未找到组件配置: "] = true
-L["[ExwindGrid] MODULE_SPEC 导出不支持循环表"] = true
-L["[ExwindGrid] 新增组件不能导出运行时回调"] = true
-L["[ExwindGrid] 新增组件不能导出循环表"] = true
-L["[ExwindGrid] MODULE_SPEC.gui 中存在重复 key："] = true
-L["[ExwindGrid] 导出失败：当前页面没有模块标识"] = true
 L["当前页面没有可导出的模块定义"] = true
-L["[ExwindGrid] 当前 MODULE_SPEC 缺少 gui.static/gui.fields"] = true
-L["[ExwindGrid] 导出默认值失败：当前页面没有模块标识"] = true
 L["当前页面没有已声明的默认值真源"] = true
 L["复制 MODULE_SPEC（当前预设默认值与 GUI 布局）:"] = true
 L["好的"] = true
@@ -2069,6 +2124,7 @@ L["限时完成"] = true
 L["词缀"] = true
 L["敌方进度"] = true
 L["百分比"] = true
+L["字体跟随"] = true
 L["有效"] = true
 L["进度文本"] = true
 L["已击杀首领"] = true
@@ -2183,7 +2239,6 @@ L["护盾文字样式"] = true
 -- ExwindToolsUI.lua — 主面板
 L["Dangerous: cannot be undone. Export a backup in Profile Manager first."] = true
 L["设置中心"] = true
-L["版本: %s | 引擎: GRID %s"] = true
 L["立即重载界面"] = true
 L["启用编辑模式"] = true
 L["关闭编辑模式"] = true
@@ -2192,6 +2247,7 @@ L["更新日志"] = true
 -- ExwindToolsUI.lua — 侧边栏
 L["首页概览"] = true
 L["模块管理"] = true
+L["模块说明"] = "模块说明"
 L["状态诊断"] = true
 L["配置管理"] = true
 L["未载入"] = true
@@ -2717,3 +2773,24 @@ L["团队倒数只在队伍/团队内生效"] = true
 L["团队倒数发起失败"] = true
 L["就位确认发起失败"] = true
 L["就位确认只在队伍/团队内生效"] = true
+L["%d 项"] = true
+
+L["列表中任一物品冷却结束时播放一次闪现。"] = true
+L["填入物品 ID 后按添加或回车"] = true
+L["当前筛选条件下没有记录。可在设置中调整筛选条件。"] = true
+L["无效物品 ID"] = true
+L["未知物品"] = true
+L["本赛季暂无大秘境通关记录。完成大秘境后可在这里查看副本、层数、日期与通关结果。"] = true
+L["法术或物品冷却结束时，在屏幕中央放大淡出一次图标。"] = true
+L["物品 ID"] = true
+L["监控物品"] = true
+L["记录：%d"] = true
+L["输入物品 ID"] = true
+
+-- 设置页 V2 新种类
+L["更多 ›"] = true
+L["收起 ‹"] = true
+L["加入快速工具条"] = true
+L["从快速工具条移除"] = true
+L["快速工具条已满（最多 %d 个）"] = true
+L["完整设置"] = true

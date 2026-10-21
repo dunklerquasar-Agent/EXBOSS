@@ -240,6 +240,32 @@ local function TextWidgetSetColor(widget, color)
     return widget
 end
 
+-- The carrier is an ordinary table; only its keys may be inspected. Component
+-- values are forwarded unchanged, including Secret numbers. A missing alpha
+-- key is an ordinary declaration choice, so it can safely default to 1.
+local function ApplyNativeColorComponents(region, setter, components)
+    if type(components) ~= "table" or (type(issecretvalue) == "function" and issecretvalue(components))
+        or getmetatable(components) ~= nil then
+        error("color components require a plain table", 3)
+    end
+    local hasR, hasG, hasB, hasA = false, false, false, false
+    for key in pairs(components) do
+        if key == "r" then hasR = true
+        elseif key == "g" then hasG = true
+        elseif key == "b" then hasB = true
+        elseif key == "a" then hasA = true
+        else error("color components allow only r, g, b, a", 3) end
+    end
+    if not hasR or not hasG or not hasB then error("color components require r, g, b", 3) end
+    if hasA then setter(region, components.r, components.g, components.b, components.a)
+    else setter(region, components.r, components.g, components.b, 1) end
+end
+
+local function TextWidgetSetColorComponents(widget, components)
+    ApplyNativeColorComponents(widget.text, widget.text.SetTextColor, components)
+    return widget
+end
+
 local function TextWidgetSetShownFromBoolean(widget, shown)
     -- FontString 没有 SetShownFromBoolean。Secret Boolean 的可见性必须直传给
     -- TextWidget 自己的普通 root Frame，由原生 Alpha 通道控制。
@@ -392,6 +418,7 @@ EXFactory:InitPool(TEXT_WIDGET_POOL, "Frame", nil, function(widget)
     widget.ClearDurationBinding = function(self) return TextWidgetClearDurationBinding(self) end
     widget.ResetSecretText = TextWidgetResetSecretText
     widget.SetColor = TextWidgetSetColor
+    widget.SetColorComponents = TextWidgetSetColorComponents
     widget.SetShownFromBoolean = TextWidgetSetShownFromBoolean
     widget.ApplyStyle = TextWidgetApplyStyle
     widget.SetAnchor = TextWidgetSetAnchor
@@ -481,6 +508,13 @@ TextWidgetSetDurationBinding = function(widget, durationObject, options)
     binding:SetExpiredText((options and options.expiredText) or "0")
     binding:SetZeroDurationText((options and options.zeroDurationText) or "0")
     binding:SetUpdateInterval((options and options.updateInterval) or 0)
+    -- 可选：按时间换文字颜色的原生颜色曲线（例如剩余时间少于几秒变红）；不读计时数值。
+    if options and options.colorCurve then
+        binding:SetTextColorCurve(options.colorCurve,
+            options.colorProperty or Enum.DurationTextBindingProperty.RemainingDuration)
+    else
+        binding:ClearTextColorCurve()
+    end
     binding:SetDuration(durationObject)
     widget._durationBindingActive = true
     widget._measureText = false
@@ -521,6 +555,11 @@ end
 -- 临时修改。用于例如施法被打断时的半透明红色遮罩。
 local function ExtraTextureWidgetSetColor(widget, r, g, b, a)
     widget.texture:SetVertexColor(r or 1, g or 1, b or 1, a == nil and 1 or a)
+    return widget
+end
+
+local function ExtraTextureWidgetSetColorComponents(widget, components)
+    ApplyNativeColorComponents(widget.texture, widget.texture.SetVertexColor, components)
     return widget
 end
 
@@ -573,6 +612,7 @@ local function ExtraTextureWidgetClear(widget)
     widget.texture:SetTexture(nil)
     widget.texture:SetTexCoord(0, 1, 0, 1)
     widget.texture:SetVertexColor(1, 1, 1, 1)
+    widget.texture:SetAlpha(1)
     widget.texture:SetBlendMode("BLEND")
     widget.texture:SetRotation(0)
     widget:Hide()
@@ -654,6 +694,7 @@ EXFactory:InitPool(EXTRA_TEXTURE_WIDGET_POOL, "Frame", nil, function(widget)
     widget.SetAtlas = ExtraTextureWidgetSetAtlas
     widget.SetTexture = ExtraTextureWidgetSetTexture
     widget.SetColor = ExtraTextureWidgetSetColor
+    widget.SetColorComponents = ExtraTextureWidgetSetColorComponents
     widget.ApplyPresentation = ExtraTextureWidgetApplyPresentation
     widget.Clear = ExtraTextureWidgetClear
     widget.SetVisible = ExtraTextureWidgetSetVisible
@@ -1128,6 +1169,9 @@ local function ApplyIconTextureStyle(widget)
             NumberOr(IconStyleValue(iconStyle, "colorB"), 1),
             NumberOr(IconStyleValue(iconStyle, "colorA"), 1)
         )
+        if widget._colorComponents then
+            ApplyNativeColorComponents(widget.icon, widget.icon.SetVertexColor, widget._colorComponents)
+        end
     end
     widget.icon:SetBlendMode(tostring(IconStyleValue(iconStyle, "blendMode") or "BLEND"))
     widget.icon:SetRotation(math.rad(NumberOr(IconStyleValue(iconStyle, "rotation"), 0)))
@@ -1253,6 +1297,24 @@ end
 local function IconWidgetSetDesaturated(widget, desaturated)
     widget._desaturatedOverride = desaturated == nil and nil or desaturated == true
     ApplyIconTextureStyle(widget)
+    return widget
+end
+
+local function IconWidgetSetColorComponents(widget, components)
+    widget._colorComponents = components
+    if not widget._unusableOverride then
+        ApplyNativeColorComponents(widget.icon, widget.icon.SetVertexColor, components)
+    end
+    return widget
+end
+
+local function IconWidgetSetTextColorComponents(widget, slot, components)
+    local textWidget
+    if slot == "A" or slot == "label" then textWidget = widget.labelText
+    elseif slot == "C" or slot == "countdown" then textWidget = widget.countdownText
+    elseif slot == "D" or slot == "stacks" then textWidget = widget.stackText end
+    if not textWidget then error("IconWidget text color slot must be A, C, or D", 2) end
+    textWidget:SetColorComponents(components)
     return widget
 end
 
@@ -1400,6 +1462,8 @@ local function IconWidgetSetNativeDuration(widget, durationObject, clearIfZero, 
             expiredText = options.expiredText,
             zeroDurationText = options.zeroDurationText,
             updateInterval = options.updateInterval,
+            colorCurve = options.colorCurve,
+            colorProperty = options.colorProperty,
         })
         widget.countdownText:Show()
     else
@@ -1459,8 +1523,9 @@ local function IconWidgetSetDurationObject(widget, durationObject, clearIfZero, 
     return IconWidgetSetNativeDuration(widget, durationObject, clearIfZero, "DURATION", durationTextProperty, durationTextOptions)
 end
 
-local function IconWidgetSetSecretCooldown(widget, durationObject, clearIfZero)
-    return IconWidgetSetNativeDuration(widget, durationObject, clearIfZero, "SECRET")
+local function IconWidgetSetSecretCooldown(widget, durationObject, clearIfZero, durationTextProperty, durationTextOptions)
+    return IconWidgetSetNativeDuration(widget, durationObject, clearIfZero, "SECRET",
+        durationTextProperty, durationTextOptions)
 end
 
 local function IconWidgetSetAnchor(widget, point, relativeTo, relativePoint, x, y)
@@ -1558,6 +1623,7 @@ local function IconWidgetResetExtraChildHosts(widget)
 end
 
 local function IconWidgetApplyStyle(widget, style)
+    widget._colorComponents = nil
     widget.style = style or {}
     widget.iconStyle = ResolveIconStyle(widget.style)
     widget.textStyles = ResolveIconTextStyles(widget.style)
@@ -1624,6 +1690,7 @@ local function IconWidgetRelease(widget)
     widget.countdownTextPrefix = nil
     widget._desaturatedOverride = nil
     widget._unusableOverride = nil
+    widget._colorComponents = nil
     widget._secretIcon = nil
     EXFactory:Release(ICON_WIDGET_POOL, widget)
 end
@@ -1699,6 +1766,8 @@ EXFactory:InitPool(ICON_WIDGET_POOL, "Frame", nil, function(widget)
     widget.SetSecretIcon = IconWidgetSetSecretIcon
     widget.ResetSecretIcon = IconWidgetResetSecretIcon
     widget.SetDesaturated = IconWidgetSetDesaturated
+    widget.SetColorComponents = IconWidgetSetColorComponents
+    widget.SetTextColorComponents = IconWidgetSetTextColorComponents
     widget.SetUsable = IconWidgetSetUsable
     widget.SetStacks = IconWidgetSetStacks
     widget.SetSecretStacks = IconWidgetSetSecretStacks
@@ -1747,7 +1816,7 @@ function EXUI:CreateIconWidget(parent, style)
 end
 
 -- =========================================================
--- TimerBarWidget：横向计时条（StatusBar + 显示型 IconWidget + TextWidget）
+-- TimerBarWidget：计时条（StatusBar + 显示型 IconWidget + TextWidget）
 -- =========================================================
 
 local TIMER_BAR_WIDGET_POOL = "RuntimeTimerBarWidget"
@@ -1755,6 +1824,7 @@ local DEFAULT_TIMER_BAR_STYLE = {
     width = 240,
     height = 24,
     texture = "Clean",
+    textureFileID = "",
     barColorR = 1, barColorG = 0.7, barColorB = 0, barColorA = 1,
     barBgColorR = 0, barBgColorG = 0, barBgColorB = 0, barBgColorA = 0.5,
     showBorder = true,
@@ -1762,7 +1832,7 @@ local DEFAULT_TIMER_BAR_STYLE = {
     borderSize = 1,
     borderPadding = 0,
     borderColorR = 1, borderColorG = 1, borderColorB = 1, borderColorA = 1,
-    fillDirection = "LEFT_TO_RIGHT",
+    fillDirection = "LEFT_TO_RIGHT", -- RIGHT_TO_LEFT / BOTTOM_TO_TOP / TOP_TO_BOTTOM
     progressMode = "REMAINING",
     showIcon = true,
     iconWidth = 24,
@@ -1821,7 +1891,10 @@ local function ResolveTimerStyle(style)
     return type(style) == "table" and style or DEFAULT_TIMER_BAR_STYLE
 end
 
-local function ResolveStatusBarTexture(name)
+local function ResolveStatusBarTexture(name, fileID)
+    if type(fileID) == "number" or (type(fileID) == "string" and fileID ~= "") then
+        return tonumber(fileID) or fileID
+    end
     local LSM = LibStub and LibStub("LibSharedMedia-3.0", true)
     if LSM and type(name) == "string" and name ~= "" then
         local path = LSM:Fetch("statusbar", name, true)
@@ -1832,12 +1905,20 @@ end
 
 local function IsTimerReverseFill(widget)
     local direction = tostring(TimerStyleValue(widget.timerStyle, "fillDirection") or "LEFT_TO_RIGHT"):upper()
-    return direction == "RIGHT_TO_LEFT" or direction == "RTL" or direction == "REVERSE"
+    return direction == "RIGHT_TO_LEFT" or direction == "TOP_TO_BOTTOM"
+        or direction == "RTL" or direction == "REVERSE"
+end
+
+local function IsTimerVerticalFill(widget)
+    local direction = tostring(TimerStyleValue(widget.timerStyle, "fillDirection") or "LEFT_TO_RIGHT"):upper()
+    return direction == "BOTTOM_TO_TOP" or direction == "TOP_TO_BOTTOM"
 end
 
 local function ApplyTimerFillDirection(widget)
     local reverse = IsTimerReverseFill(widget)
+    local orientation = IsTimerVerticalFill(widget) and "VERTICAL" or "HORIZONTAL"
     for _, bar in ipairs({ widget.bar, widget.secretBar }) do
+        if bar then bar:SetOrientation(orientation) end
         if bar and bar.SetFillStyle and _G.Enum and Enum.StatusBarFillStyle then
             bar:SetFillStyle(reverse and Enum.StatusBarFillStyle.Reverse or Enum.StatusBarFillStyle.Standard)
         elseif bar and bar.SetReverseFill then
@@ -1899,7 +1980,8 @@ end
 local function ApplyTimerBarVisual(widget)
     ResetTimerBarSecretFillColors(widget)
     local timerStyle = widget.timerStyle
-    local texture = ResolveStatusBarTexture(TimerStyleValue(timerStyle, "texture"))
+    local texture = ResolveStatusBarTexture(TimerStyleValue(timerStyle, "texture"),
+        TimerStyleValue(timerStyle, "textureFileID"))
     local r = NumberOr(TimerStyleValue(timerStyle, "barColorR"), 1)
     local g = NumberOr(TimerStyleValue(timerStyle, "barColorG"), 0.7)
     local b = NumberOr(TimerStyleValue(timerStyle, "barColorB"), 0)
@@ -2035,16 +2117,29 @@ local function LayoutTimerBar(widget)
         widget.icon:Hide()
     end
 
+    -- Optional points only; text style x/y remain the sole content offset.
+    local textAnchors = widget.style.textAnchors
+    if textAnchors ~= nil and type(textAnchors) ~= "table" then
+        error("TimerBarWidget textAnchors must be table", 2)
+    end
+    local function AnchorText(slot, textWidget)
+        local anchor = textAnchors and textAnchors[slot]
+        if anchor ~= nil and type(anchor) ~= "table" then
+            error("TimerBarWidget textAnchors." .. slot .. " must be table", 2)
+        end
+        textWidget:SetAnchor(anchor and anchor.point or "CENTER", widget.bar,
+            anchor and anchor.relativePoint or "CENTER")
+    end
     widget.labelText:SetBounds(barWidth, barHeight)
-    widget.labelText:SetAnchor("CENTER", widget.bar, "CENTER")
+    AnchorText("label", widget.labelText)
     widget.timeText:SetBounds(barWidth, barHeight)
-    widget.timeText:SetAnchor("CENTER", widget.bar, "CENTER")
+    AnchorText("time", widget.timeText)
     widget.secretCountdown:ClearAllPoints()
     widget.secretCountdown:SetAllPoints(widget.bar)
     -- 固定 Bounds 是必须的：Secret 层数文字不能测量宽高，没有 Bounds 会退化成 1x1 像素
     -- 不可见（同 IconWidget 踩过的坑，见 EXUI_组合控件规范.md 0.3.2）。
     widget.stackText:SetBounds(barWidth, barHeight)
-    widget.stackText:SetAnchor("CENTER", widget.bar, "CENTER")
+    AnchorText("stacks", widget.stackText)
 
     local rootRect = NewSelectionRect(-totalWidth * 0.5, totalWidth * 0.5, -totalHeight * 0.5, totalHeight * 0.5)
     local barLeft, barRight
@@ -2067,12 +2162,19 @@ local function LayoutTimerBar(widget)
         end
     end
     local labelStyle, timeStyle = widget.textStyles.label or {}, widget.textStyles.time or {}
+    local function TextRect(slot, style)
+        local anchor = textAnchors and textAnchors[slot]
+        local rect = anchor and BuildAnchoredSelectionRect(barRect,
+            { point = anchor.point or "CENTER", relativePoint = anchor.relativePoint or "CENTER" },
+            barWidth, barHeight) or barRect
+        return TranslateSelectionRect(rect, NumberOr(style.x, 0), NumberOr(style.y, 0))
+    end
     widget.declaredSelectionRects = {
         ["core.root"] = rootRect,
         ["core.bar"] = barRect,
         ["core.icon"] = iconRect,
-        ["core.spellName"] = TranslateSelectionRect(barRect, NumberOr(labelStyle.x, 0), NumberOr(labelStyle.y, 0)),
-        ["core.time"] = TranslateSelectionRect(barRect, NumberOr(timeStyle.x, 0), NumberOr(timeStyle.y, 0)),
+        ["core.spellName"] = TextRect("label", labelStyle),
+        ["core.time"] = TextRect("time", timeStyle),
     }
 end
 
@@ -2098,6 +2200,7 @@ end
 local function ApplyTimerMarkers(widget, markerList)
     markerList = type(markerList) == "table" and markerList or {}
     local reverse = IsTimerReverseFill(widget)
+    local vertical = IsTimerVerticalFill(widget)
     for index, entry in ipairs(markerList) do
         local marker = EnsureTimerMarker(widget, index)
         local value = type(entry) == "table" and (entry.value or entry.percent) or entry
@@ -2108,6 +2211,7 @@ local function ApplyTimerMarkers(widget, markerList)
         local b = NumberOr(type(entry) == "table" and entry.b, 1)
         local a = NumberOr(type(entry) == "table" and entry.a, 0.65)
 
+        marker.track:SetOrientation(vertical and "VERTICAL" or "HORIZONTAL")
         if marker.track.SetFillStyle and _G.Enum and Enum.StatusBarFillStyle then
             marker.track:SetFillStyle(reverse and Enum.StatusBarFillStyle.Reverse or Enum.StatusBarFillStyle.Standard)
         elseif marker.track.SetReverseFill then
@@ -2115,11 +2219,17 @@ local function ApplyTimerMarkers(widget, markerList)
         end
         marker.track:SetMinMaxValues(0, 1)
         marker.track:SetValue(value)
-        marker.line:SetWidth(lineWidth)
-        marker.line:SetHeight(widget.bar:GetHeight())
+        marker.line:SetWidth(vertical and widget.bar:GetWidth() or lineWidth)
+        marker.line:SetHeight(vertical and lineWidth or widget.bar:GetHeight())
         marker.line:SetVertexColor(r, g, b, a)
         marker.line:ClearAllPoints()
-        if reverse then
+        if vertical then
+            if reverse then
+                marker.line:SetPoint("TOP", marker.track:GetStatusBarTexture(), "BOTTOM")
+            else
+                marker.line:SetPoint("BOTTOM", marker.track:GetStatusBarTexture(), "TOP")
+            end
+        elseif reverse then
             marker.line:SetPoint("RIGHT", marker.track:GetStatusBarTexture(), "LEFT")
         else
             marker.line:SetPoint("LEFT", marker.track:GetStatusBarTexture(), "RIGHT")
@@ -2205,7 +2315,11 @@ local function TimerBarWidgetSetSecretProgress(widget, secretValue, maximum, min
     widget._timerMode = "SECRET"
     widget.bar:Hide()
     widget.secretBar:Show()
-    widget.secretBar:SetMinMaxValues(NumberOr(minimum, 0), math.max(1, NumberOr(maximum, 1)))
+    local minValue = NumberOr(minimum, 0)
+    local maxValue = NumberOr(maximum, 1)
+    -- Bounds are ordinary caller-supplied numbers; the value remains opaque.
+    if maxValue <= minValue then maxValue = minValue + 1 end
+    widget.secretBar:SetMinMaxValues(minValue, maxValue)
     widget.secretBar:SetValue(secretValue)
     widget.timeText:ClearDurationBinding()
     widget.timeText:ApplyStyle(widget.textStyles and widget.textStyles.time or DEFAULT_TEXT_STYLE)
@@ -2238,6 +2352,15 @@ local function TimerBarWidgetSetFillColor(widget, color)
         if texture then
             texture:SetVertexColor(r, g, b, a)
         end
+    end
+    return widget
+end
+
+local function TimerBarWidgetSetFillColorComponents(widget, components)
+    -- Reset a prior boolean color before forwarding separate components.
+    if widget._secretFillRegions then ApplyTimerBarVisual(widget) end
+    for _, statusBar in ipairs({ widget.bar, widget.secretBar }) do
+        ApplyNativeColorComponents(statusBar, statusBar.SetStatusBarColor, components)
     end
     return widget
 end
@@ -2336,8 +2459,11 @@ local function TimerBarWidgetSetNativeDuration(widget, durationObject, interpola
     inactiveBar:Hide()
     durationBar:Show()
     if durationBar.SetTimerDuration then
+        -- An omitted direction uses the same remaining-time default as the text.
+        -- Explicit 0/1 still controls only native fill; textOptions controls text.
+        local fillDirection = direction == nil and 1 or direction
         durationBar:SetTimerDuration(durationObject, interpolation or (_G.Enum and Enum.StatusBarInterpolation.None),
-            direction or 0)
+            fillDirection)
         -- SetTimerDuration only changes the native target.  A reused StatusBar
         -- can otherwise remain at its prior rendered value (including empty)
         -- while the same DurationObject already drives the visible number.
@@ -2380,8 +2506,8 @@ end
 -- Secret Duration entry: values remain opaque from this point onward.  The
 -- native renderer implementation is intentionally shared with ordinary
 -- Duration Objects; only this public semantic entry is for protected input.
-local function TimerBarWidgetSetSecretTime(widget, durationObject, interpolation, direction)
-    return TimerBarWidgetSetNativeDuration(widget, durationObject, interpolation, direction, "SECRET")
+local function TimerBarWidgetSetSecretTime(widget, durationObject, interpolation, direction, textOptions)
+    return TimerBarWidgetSetNativeDuration(widget, durationObject, interpolation, direction, "SECRET", textOptions)
 end
 
 -- 普通层数：走自动测量（ClearBounds 会在下次 LayoutTimerBar 时被固定 Bounds 重新覆盖，
@@ -2695,6 +2821,10 @@ local function TimerBarWidgetSetPresentationOptions(widget, options)
 end
 
 local function TimerBarWidgetSetFillVisible(widget, visible)
+    -- A pooled bar may have received a Secret boolean alpha on the previous
+    -- presentation. Restore the ordinary baseline before applying visibility.
+    widget.bar:SetAlpha(1)
+    widget.secretBar:SetAlpha(1)
     widget._fillVisibleOverride = visible ~= false
     local shown = widget._fillVisibleOverride
     if widget._timerMode == "SECRET" then
@@ -2704,6 +2834,12 @@ local function TimerBarWidgetSetFillVisible(widget, visible)
         widget.bar:SetShown(shown)
         widget.secretBar:Hide()
     end
+    return widget
+end
+
+local function TimerBarWidgetSetFillShownFromBoolean(widget, value)
+    widget.bar:SetAlphaFromBoolean(value, 1, 0)
+    widget.secretBar:SetAlphaFromBoolean(value, 1, 0)
     return widget
 end
 
@@ -2806,6 +2942,7 @@ local function TimerBarWidgetRelease(widget)
     if widget._mythicReleaseTrace then _G.print("[MythicCast Release] " .. (widget._mythicReleaseTraceUnit or "?") .. " | timer: icon released") end
     widget.labelText:Release()
     if widget._mythicReleaseTrace then _G.print("[MythicCast Release] " .. (widget._mythicReleaseTraceUnit or "?") .. " | timer: label released") end
+    if widget.textB then widget.textB:Release(); widget.textB = nil end
     widget.timeText:Release()
     if widget._mythicReleaseTrace then _G.print("[MythicCast Release] " .. (widget._mythicReleaseTraceUnit or "?") .. " | timer: time released") end
     widget.stackText:Release()
@@ -2908,6 +3045,7 @@ EXFactory:InitPool(TIMER_BAR_WIDGET_POOL, "Frame", nil, function(widget)
     widget.SetProgress = TimerBarWidgetSetProgress
     widget.SetSecretProgress = TimerBarWidgetSetSecretProgress
     widget.SetFillColor = TimerBarWidgetSetFillColor
+    widget.SetFillColorComponents = TimerBarWidgetSetFillColorComponents
     widget.SetFillColorFromBoolean = TimerBarWidgetSetFillColorFromBoolean
     widget.SetTime = TimerBarWidgetSetTime
     widget.SetDurationObject = TimerBarWidgetSetDurationObject
@@ -2931,6 +3069,7 @@ EXFactory:InitPool(TIMER_BAR_WIDGET_POOL, "Frame", nil, function(widget)
     widget.SetGeometryOverride = TimerBarWidgetSetGeometryOverride
     widget.SetPresentationOptions = TimerBarWidgetSetPresentationOptions
     widget.SetFillVisible = TimerBarWidgetSetFillVisible
+    widget.SetFillShownFromBoolean = TimerBarWidgetSetFillShownFromBoolean
     widget.GetExtensionHost = TimerBarWidgetGetExtensionHost
     widget.SetAnchor = TimerBarWidgetSetAnchor
     widget.IsUsable = TimerBarWidgetIsUsable
@@ -2938,7 +3077,7 @@ EXFactory:InitPool(TIMER_BAR_WIDGET_POOL, "Frame", nil, function(widget)
     widget.Release = TimerBarWidgetRelease
 end)
 
--- 初版 TimerBarWidget：横向条，默认含纯显示图标；不会在图标上显示第二套倒数。
+-- TimerBarWidget 默认横向，含纯显示图标；不会在图标上显示第二套倒数。
 function EXUI:CreateTimerBarWidget(parent, style)
     local widget = EXFactory:Acquire(TIMER_BAR_WIDGET_POOL, parent)
     widget._released = false

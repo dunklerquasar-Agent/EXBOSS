@@ -1,15 +1,16 @@
 -- =========================================================
--- ExwindTools UI v4.1 - 原生 Grid 引擎版
+-- ExwindTools UI - V2 模块设置页
 -- =========================================================
 
 local ExwindTools = _G.ExwindTools
 if not ExwindTools then return end
+local GM = ExwindTools.GUIMetrics
 local GC = ExwindTools.GUIColors
 if not GC then error("ExwindGUIColor.lua must load before ExwindToolsUI.lua") end
 
 local L = ExwindTools.L
 
--- 使用已存在的 EXUI（由 ExwindGUI.lua 和 ExwindGrid.lua 创建）
+-- 使用 ExwindGUI.lua 创建的 EXUI。
 local EXUI = ExwindTools.UI or {}
 ExwindTools.UI = EXUI
 _G.ExwindToolsUI = EXUI
@@ -84,17 +85,15 @@ EXUI.ActivePageScrollFrame = nil     -- 当前页面的滚动 owner；不覆盖 
 EXUI._InternalPageFrame = nil        -- ExwindTools 内部专用，跟踪自身页面帧，不被外部覆写
 EXUI.PendingRightScrollRestore = nil -- 通用右侧滚动容器刷新后需要恢复的滚动位置
 
--- gui.version=1 的唯一页面声明登记表。登记只保存纯声明；中央 Controller
--- 在实际挂载前另行注入 picker 等运行期回调，避免把函数写回模块声明。
-EXUI.SettingsPageDeclarations = EXUI.SettingsPageDeclarations or {}
 EXUI.ModuleSettingsV2Pages = EXUI.ModuleSettingsV2Pages or {}
 
+-- ownerFactory 可省略：只用 path 绑定的页面由中央挂载提供 owner.binding。
 function EXUI:RegisterModuleSettingsPageV2(moduleKey, declaration, ownerFactory)
     if type(moduleKey) ~= "string" or moduleKey == "" then
         error("RegisterModuleSettingsPageV2 requires a moduleKey", 2)
     end
-    if type(ownerFactory) ~= "function" then
-        error("RegisterModuleSettingsPageV2 requires an owner factory", 2)
+    if ownerFactory ~= nil and type(ownerFactory) ~= "function" then
+        error("RegisterModuleSettingsPageV2 ownerFactory must be a function", 2)
     end
     if self.ModuleSettingsV2Pages[moduleKey] ~= nil then
         error("duplicate module V2 settings page: " .. moduleKey, 2)
@@ -109,65 +108,6 @@ function EXUI:RegisterModuleSettingsPageV2(moduleKey, declaration, ownerFactory)
         ownerFactory = ownerFactory,
     }
     return true
-end
-
-local function CopySettingsDeclaration(value, seen)
-    if type(value) ~= "table" then return value end
-    seen = seen or {}
-    if seen[value] then error("settings page declaration cannot be cyclic", 3) end
-    local result = {}
-    seen[value] = true
-    for key, child in pairs(value) do
-        result[CopySettingsDeclaration(key, seen)] = CopySettingsDeclaration(child, seen)
-    end
-    seen[value] = nil
-    return result
-end
-
-local function ValidatePureSettingsDeclaration(value, seen)
-    local valueType = type(value)
-    if valueType == "function" or valueType == "userdata" or valueType == "thread" then
-        error("settings page declaration must contain data only", 3)
-    end
-    if valueType ~= "table" then return end
-    seen = seen or {}
-    if seen[value] then error("settings page declaration cannot be cyclic", 3) end
-    seen[value] = true
-    for key, child in pairs(value) do
-        ValidatePureSettingsDeclaration(key, seen)
-        ValidatePureSettingsDeclaration(child, seen)
-    end
-    seen[value] = nil
-end
-
-function EXUI:RegisterSettingsPage(pageId, guiDeclaration)
-    if type(pageId) ~= "string" or pageId:match("^%s*$") then
-        error("RegisterSettingsPage requires a non-empty pageId", 2)
-    end
-    if self.SettingsPageDeclarations[pageId] ~= nil then
-        error("duplicate settings page declaration: " .. pageId, 2)
-    end
-    ValidatePureSettingsDeclaration(guiDeclaration)
-    local grid = _G.ExwindGrid
-    if not grid or type(grid.ValidateSettingsDeclaration) ~= "function" then
-        error("RegisterSettingsPage requires ExwindGrid typed settings validation", 2)
-    end
-    if type(guiDeclaration) ~= "table" or guiDeclaration.version ~= 1
-        or type(guiDeclaration.sections) ~= "table" or guiDeclaration.cards ~= nil then
-        error("RegisterSettingsPage accepts only version=1 sections declarations; special cards use their owning page", 2)
-    end
-    local ok, reason = grid:ValidateSettingsDeclaration(guiDeclaration, {
-        pageId = pageId,
-        regionId = "registration",
-    })
-    if not ok then error(reason, 2) end
-    self.SettingsPageDeclarations[pageId] = CopySettingsDeclaration(guiDeclaration)
-    return true
-end
-
-function EXUI:GetSettingsPage(pageId)
-    local declaration = self.SettingsPageDeclarations[pageId]
-    return declaration and CopySettingsDeclaration(declaration) or nil
 end
 
 -- =========================================================
@@ -458,46 +398,83 @@ function EXUI:CreatePreviewInteractionLayer(host, options)
     return layer
 end
 
--- 预览右键必须由页面明确交出它正在显示的 ScrollFrame + ScrollChild。不能从
--- 当前全局 WidgetMap 猜同名 key：页面切换或另一容器完成 render 后会把焦点错误
--- 指到别的容器。模块仍只传语义 GUI target；Core 严格在该 container 的 state 中找。
-function EXUI:FocusModuleGridKey(moduleKey, gridKey, scrollFrame, container)
-    if type(moduleKey) ~= "string" or moduleKey == "" or type(gridKey) ~= "string" or gridKey == "" then
-        return false
+-- =========================================================
+-- 当前模块设置页的统一查询入口。预览、锚点等只经这里按 key 找控件、列出组合控件、
+-- 回读存档和定位控件，查询仅面向存活的 V2 会话。
+-- =========================================================
+local ModulePage = {}
+ModulePage.__index = ModulePage
+
+function EXUI:GetModulePage(moduleKey, container)
+    container = container or self.ActivePageFrame
+    if type(moduleKey) ~= "string" or moduleKey == "" or not container then return nil end
+    local session = container._exV2Session
+    if session then
+        local binding = container._exV2Owner and container._exV2Owner.binding
+        if not session.alive or type(binding) ~= "table" or binding.moduleKey ~= moduleKey then return nil end
+        return setmetatable({ moduleKey = moduleKey, container = container, owner = session }, ModulePage)
     end
-    if not scrollFrame or type(scrollFrame.SetVerticalScroll) ~= "function" or not container then return false end
-    local grid = _G.ExwindGrid
-    if not grid or type(grid.FindMountedWidget) ~= "function" then return false end
-    local mountedOwner = type(grid.GetMountedOwner) == "function"
-        and grid:GetMountedOwner(container) or nil
-    if not mountedOwner then return false end
+    return nil
+end
 
-    local function ResolveTarget()
-        if type(grid.IsMountedOwnerCurrent) ~= "function"
-            or not grid:IsMountedOwnerCurrent(container, mountedOwner) then return nil end
-        local target, state, _, ownerContainer = grid:FindMountedWidget(container, gridKey)
-        if not state or state.moduleKey ~= moduleKey then return nil end
-        local meta = target and state.widgetMap and state.widgetMap[target]
-        if not target or not meta or not meta.item or meta.item.key ~= gridKey then return nil end
-        -- 卡片页的直接 owner 是该卡 Body；旧页仍是根 container。拒绝已回池、
-        -- 被页面切换重新 parent 或来自另一个挂载会话的同名对象。
-        if type(target.GetParent) ~= "function" or target:GetParent() ~= ownerContainer then return nil end
-        return target
-    end
+function ModulePage:IsCurrent()
+    return self.owner.alive == true and self.container._exV2Session == self.owner
+end
 
-    if not ResolveTarget() then return false end
+-- 返回 控件本体, 组件类型(小写), 用于定位的区域。拒绝已回池或来自别的挂载的同名对象。
+function ModulePage:Find(key)
+    if not self:IsCurrent() then return nil end
+    local node = self.owner:FindNode(key)
+    if not node or not node.frame then return nil end
+    local spec = node.spec
+    return node.instance or node.button or node.frame,
+        string.lower(tostring(spec.component or (node.adapter and node.adapter.component)
+            or spec.controlType or spec.kind)), node.frame
+end
 
+function ModulePage:Components(componentType)
+    local list = {}
+    if not self:IsCurrent() then return list end
+    self.owner:ForEachNode(function(node)
+        if node.spec.kind == "component" and node.instance
+            and (node.spec.component or (node.adapter and node.adapter.component)) == componentType then
+            list[#list + 1] = node.instance
+        end
+    end)
+    return list
+end
+
+-- 预览或锚点写入同一份存档后，让页面上的控件回读。
+function ModulePage:Refresh()
+    if not self:IsCurrent() then return false end
+    self.owner:Refresh()
+    return true
+end
+
+-- 把目标设置块滚到可视区最上方并闪烁描边。
+function ModulePage:Focus(key, scrollFrame)
+    if not scrollFrame or type(scrollFrame.SetVerticalScroll) ~= "function" then return false end
+    if not select(3, self:Find(key)) then return false end
+    local page = self
     local function Reveal()
-        local target = ResolveTarget()
+        local _, _, target = page:Find(key)
         if not target or not target.GetTop then return end
-        if scrollFrame and container and scrollFrame.SetVerticalScroll then
-            local childTop, widgetTop = container:GetTop(), target:GetTop()
-            if childTop and widgetTop then
-                -- 预览右键的契约是“目标设置块位于可视区最上方”，不是只保证
-                -- 可见或留一个任意边距。childTop - widgetTop 是该块在 ScrollChild
-                -- 内的精确纵向偏移；ScrollFrame 会自行夹到可滚动范围。
-                scrollFrame:SetVerticalScroll(math.max(0, childTop - widgetTop))
+        local pageTarget, node = target, page.owner:FindNode(key)
+        while node do
+            if node.scrollFrame then
+                local contentTop, targetTop = node.scrollFrame._v2Content:GetTop(), target:GetTop()
+                if contentTop and targetTop then
+                    node.scrollFrame:SetVerticalScroll(math.max(0, math.min(contentTop - targetTop,
+                        node.scrollFrame:GetVerticalScrollRange())))
+                end
+                pageTarget = node.frame
             end
+            node = node.parent
+        end
+        local childTop, widgetTop = page.container:GetTop(), pageTarget:GetTop()
+        if childTop and widgetTop then
+            -- childTop - widgetTop 是该块在 ScrollChild 内的纵向偏移；ScrollFrame 自行夹到可滚动范围。
+            scrollFrame:SetVerticalScroll(math.max(0, childTop - widgetTop))
         end
 
         local flash = target._exPreviewFocusFlash
@@ -535,11 +512,16 @@ function EXUI:FocusModuleGridKey(moduleKey, gridKey, scrollFrame, container)
             if flash then flash:Hide() end
         end)
     end
-
-    -- 等当前鼠标事件结束后再重新按同一 container 解析一次，确保坐标最新且
-    -- 不会对页面切换后回池/改 parent 的旧目标操作。
+    -- 等当前鼠标事件结束后再按同一页面重新解析一次，不对页面切换后回池的旧目标操作。
     C_Timer.After(0, Reveal)
     return true
+end
+
+-- 预览右键必须由页面明确交出它正在显示的 ScrollFrame + ScrollChild；模块只传语义 GUI key。
+function EXUI:FocusModuleGridKey(moduleKey, gridKey, scrollFrame, container)
+    if type(gridKey) ~= "string" or gridKey == "" or not container then return false end
+    local page = self:GetModulePage(moduleKey, container)
+    return page ~= nil and page:Focus(gridKey, scrollFrame)
 end
 
 --- Panel Preview 的模块侧右键入口。当前页面在 Render 时已明确持有其
@@ -712,50 +694,8 @@ end
 -- 搜索结果仍由自己的导航树负责。
 local function CreateSidebarSearchBox(parent, initialText, opts)
     local config = type(opts) == "table" and opts or {}
-    local edit = CreateFrame("EditBox", nil, parent, "BackdropTemplate")
-    edit:SetHeight(config.height or 26)
-    if edit.SetAutoFocus then edit:SetAutoFocus(false) end
-    if edit.SetFont then edit:SetFont(defaultFontPath, 14, "") end
-    if edit.SetTextColor then edit:SetTextColor(unpack(GC.text)) end
-    if edit.SetCursorColor then edit:SetCursorColor(unpack(GC.accent)) end
-    if edit.SetTextInsets then edit:SetTextInsets(10, 10, 0, 0) end
-    edit:SetBackdrop(FRAME_BACKDROP_FLAT)
-    edit:SetBackdropColor(unpack(GC.input))
-    edit:SetBackdropBorderColor(unpack(GC.panelBorder))
-
-    local placeholder = EXUI:CreateVisualFontString(edit, EXFONTFRAME)
-    placeholder:SetPoint("LEFT", 10, 0)
-    placeholder:SetPoint("RIGHT", -10, 0)
-    placeholder:SetJustifyH("LEFT")
-    placeholder:SetFont(defaultFontPath, 14, "")
-    placeholder:SetTextColor(unpack(GC.textPlaceholder))
-    placeholder:SetText(config.placeholder or L["搜索..."])
-    edit._placeholder = placeholder
-
-    local function RefreshPlaceholder(self)
-        self._placeholder:SetShown(self:GetText() == "" and not self:HasFocus())
-    end
-
-    edit:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-    edit:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
-    edit:SetScript("OnEditFocusGained", function(self)
-        self:SetBackdropBorderColor(unpack(GC.accent))
-        RefreshPlaceholder(self)
-    end)
-    edit:SetScript("OnEditFocusLost", function(self)
-        self:SetBackdropBorderColor(unpack(GC.panelBorder))
-        RefreshPlaceholder(self)
-    end)
-    edit:SetScript("OnTextChanged", function(self, userInput)
-        RefreshPlaceholder(self)
-        if config.onChanged then config.onChanged(self:GetText(), userInput, self) end
-    end)
-
-    edit:SetText(initialText or "")
-    RefreshPlaceholder(edit)
-    return edit
+    return EXUI:CreateSearchBox(parent, initialText, config.width, config.height, config)
 end
-
 local function ApplyModernScrollBarSkin(scrollFrame)
     if not scrollFrame then
         return
@@ -886,8 +826,8 @@ function EXUI:CreateMainFrame()
     --底层显示
     local status = EXUI:CreateVisualFontString(f, EXFONTFRAME, "GameFontHighlightSmall")
     status:SetPoint("BOTTOMLEFT", 18, 15)
-    status:SetText(string.format("%s%s|r", GC.markup.placeholder, string.format(L["版本: %s | 引擎: GRID %s"],
-        ExwindTools.VERSION or "Unknown", ExwindTools.GridEngineVersion or "Unknown")))
+    status:SetText(string.format("%s%s|r", GC.markup.placeholder,
+        string.format(L["版本: %s"], ExwindTools.VERSION or "Unknown")))
     f.Status = status
 
     -- 暴雪原生关闭按钮
@@ -907,14 +847,14 @@ function EXUI:CreateMainFrame()
     footer:SetSize(850, 40)
     footer:SetPoint("BOTTOMRIGHT", -15, 10)
 
-    local reloadBtn = EXUI:CreateSmallButton(footer, L["立即重载界面"], function()
+    local reloadBtn = EXUI:CreateButton(footer, 120, ExwindTools.GUIMetrics.size.buttonHeight, L["立即重载界面"], function()
         C_UI.Reload()
     end)
     reloadBtn:SetPoint("RIGHT", 0, -8)
-    reloadBtn:SetSize(180, 26)
+    reloadBtn:SetSize(180, GM.size.buttonHeight)
 
     -- [v4.7] 新增编辑模式快捷开关
-    local editBtn = EXUI:CreateSmallButton(footer, EXUI:IsEditModeActive() and L["关闭编辑模式"] or L["启用编辑模式"], function()
+    local editBtn = EXUI:CreateButton(footer, 120, ExwindTools.GUIMetrics.size.buttonHeight, EXUI:IsEditModeActive() and L["关闭编辑模式"] or L["启用编辑模式"], function()
         EXUI:ToggleEditMode()
         -- [优化] 如果开启了编辑模式，自动关闭设置面板，方便用户调整布局
         if EXUI:IsEditModeActive() and f:IsShown() then
@@ -922,16 +862,16 @@ function EXUI:CreateMainFrame()
         end
     end)
     editBtn:SetPoint("RIGHT", reloadBtn, "LEFT", -10, 0)
-    editBtn:SetSize(180, 26)
+    editBtn:SetSize(180, GM.size.buttonHeight)
     EXUI.EditModeToggleButton = editBtn
 
-    local changelogBtn = EXUI:CreateSmallButton(footer, L["更新日志"], function()
+    local changelogBtn = EXUI:CreateButton(footer, 120, ExwindTools.GUIMetrics.size.buttonHeight, L["更新日志"], function()
         if ExwindTools.ShowChangelog then
             ExwindTools:ShowChangelog({ markShown = true })
         end
     end)
     changelogBtn:SetPoint("RIGHT", editBtn, "LEFT", -10, 0)
-    changelogBtn:SetSize(150, 26)
+    changelogBtn:SetSize(150, GM.size.buttonHeight)
     EXUI.ChangelogButton = changelogBtn
 
     f:Hide()
@@ -1085,6 +1025,28 @@ local function ApplySidebarModuleButtonState(btn, isActive, isEnabled)
     EXUI:SetSidebarNavigationButtonState(btn, btn.isActive, btn.isEnabledState)
 end
 
+local TOOLS_NAVIGATION_ICONS = {
+    Home = "house", LoadSettings = "blocks", Diagnostic = "activity", ProfileManager = "sliders-horizontal",
+    ["ExTools.MiniTools"] = "toolbox", ["ExTools.CombatAlert"] = "swords",
+    ["ExTools.PlayerPosition"] = "map-pin", ["ExTools.ChatChannelBar"] = "messages-square",
+    ["ExTools.AutoBuy"] = "shopping-cart", ["ExTools.GossipID"] = "message-circle-more",
+    ["ExTools.CombatMobDebuffGrid"] = "skull", ["ExTools.RaidMarkerPanel"] = "star",
+    ["ExM+Info.MDTIconHook"] = "map", ["ExM+Info.MythicIcon"] = "door-open",
+    ["ExM+Info.TeleMsg"] = "message-square", ["ExM+Info.Tooltip"] = "trophy",
+    ["ExM+Info.RunHistory"] = "history", ["ExM+.MythicDamage"] = "flame",
+    ["ExTools.PveInfoPanel"] = "castle", ["ExTools.PveKeystoneInfo"] = "key-round",
+    ["ExClass.FocusCast"] = "wand-sparkles", ["ExTools.BattleResurrection"] = "heart-pulse",
+    ["ExTools.PlayerShield"] = "shield", ["ExTools.PlayerHealAbsorb"] = "shield-plus",
+    ["ExTools.CombatTimer"] = "timer", ["ExTools.SpellQueue"] = "timer-reset",
+    ["ExClass.SpellEffectAlpha"] = "blend", ["ExTools.PlayerStats"] = "chart-no-axes-column",
+    ["ExTools.YYSound"] = "volume-2", ["ExTools.CastSequence"] = "book-open",
+    ["ExClass.RangeCheck"] = "crosshair", ["ExClass.NoMoveSkillAlert"] = "move",
+    ["ExClass.DKBloodBoil"] = "sparkles", ["ExClass.DKBloodBoilSmart"] = "sparkles",
+    ["ExTools.CooldownFlash"] = "sparkles",
+    ["ExClass.BrewmasterStagger"] = "beer", ["ExTools.TransformTimer"] = "hourglass",
+    ["ExPTR.MiniTools"] = "toolbox", ["ExPTR.SetKey"] = "key-round",
+}
+
 -- 标题从本地 Frame 列表复用；可点击项始终从公共 GridButton 池取得。
 function EXUI:GetSidebarObj(type, parent)
     local pool = EXUI.SidebarPool[type]
@@ -1185,12 +1147,14 @@ function EXUI:BuildNavigationTree(parent)
         btn.moduleKey = key
         ApplySidebarItemLayout(btn, variant or "module")
         UpdateSidebarItemBadge(btn, meta)
+        local iconID = TOOLS_NAVIGATION_ICONS[key or page]
+        EXUI:SetSidebarNavigationButtonIcon(btn, iconID and EXUI:GetIcon(iconID) or nil)
 
         -- [New] 检测模块是否已载入
         local isModule = (key ~= nil)
         local isLoaded = not isModule
         if isModule and ExwindTools.DB and ExwindTools.DB.LoadByKey then
-            isLoaded = ExwindTools.DB.LoadByKey[key]
+            isLoaded = ExwindTools.DB.LoadByKey[key] ~= false
         end
         btn.isLoaded = isLoaded
 
@@ -1215,7 +1179,7 @@ function EXUI:BuildNavigationTree(parent)
             end)
         end)
 
-        yOffset = yOffset - (btn.variant == "topnav" and 30 or 26)
+        yOffset = yOffset - EXUI:FitSidebarNavigationButtonHeight(btn) - 2
     end
 
     for _, info in ipairs(staticItems) do
@@ -1329,7 +1293,11 @@ end
 function EXUI:SyncScrollChildWidths()
     if EXUI.SidebarScrollFrame and EXUI.SidebarFrame then
         local w = EXUI.SidebarScrollFrame:GetWidth()
-        if w and w > 1 then EXUI.SidebarFrame:SetWidth(w) end
+        -- 导航项按宽度换行定高，宽度变了要重新排一次。
+        if w and w > 1 and math.abs(EXUI.SidebarFrame:GetWidth() - w) > 0.5 then
+            EXUI.SidebarFrame:SetWidth(w)
+            EXUI:BuildNavigationTree(EXUI.SidebarFrame)
+        end
     end
     if EXUI.RightScrollFrame and EXUI.RightScrollChild then
         local w = EXUI.RightScrollFrame:GetWidth()
@@ -1412,10 +1380,6 @@ function EXUI:RelayoutUnifiedWorkspace(metrics)
     end
     EXUI:SyncScrollChildWidths()
 
-    local cols = metrics and metrics.splitGridCols
-    if cols and _G.ExwindGrid and EXUI._InternalPageFrame then
-        _G.ExwindGrid:SetContainerCols(EXUI._InternalPageFrame, cols)
-    end
     return true
 end
 
@@ -1439,43 +1403,101 @@ end
 -- =========================================================
 -- 模块设置页生命周期
 --
--- PageCache 只缓存有限数量的页面 root；Grid 控件属于页面的动态内容。
--- 离开模块页时必须在 root Hide/SetParent(nil) 之前归还 Grid 实例，
+-- PageCache 只缓存有限数量的页面 root；V2 控件属于页面的动态内容。
+-- 离开模块页时必须在 root Hide/SetParent(nil) 之前释放 V2 会话，
 -- 否则每个首次访问的模块都会长期占用一套 active pool widget。
 -- =========================================================
-function EXUI:ReleaseModuleSettingsPage(page)
-    page = page or EXUI._InternalPageFrame
-    if not page or not page._exGridPage then
-        return false
-    end
+-- V2 模块页沿用设置页版式：页头（模块名与说明）在上，内容居中占 75% 宽。
+local V2_MODULE_PAGE_INSET_X, V2_MODULE_PAGE_TOP, V2_MODULE_PAGE_BOTTOM = 12, 16, 52
 
-    local grid = _G.ExwindGrid
-
+local function ReleaseV2ModulePage(page)
     if page._exV2Session then
         page._exV2Session:Release()
         page._exV2Session = nil
-        page._exV2Owner = nil
-    elseif not grid then
+    end
+    page._exV2Owner = nil
+    page._exV2ScrollFrame = nil
+    if page._exV2Heading then
+        page._exV2Heading:Release()
+        page._exV2Heading = nil
+    end
+end
+
+local function V2ModulePageColumn(page)
+    local available = math.max(1, page:GetWidth() - V2_MODULE_PAGE_INSET_X * 2)
+    local width = math.max(1, math.floor(available * 0.75 + 0.5))
+    return V2_MODULE_PAGE_INSET_X + math.floor((available - width) * 0.5 + 0.5), width
+end
+
+local function LayoutV2ModulePage(page)
+    local host = page._exV2Host
+    if not host or not page._exV2Session then return end
+    local left, width = V2ModulePageColumn(page)
+    local top = V2_MODULE_PAGE_TOP
+    local heading = page._exV2Heading
+    if heading then
+        local height = EXUI:UpdateSettingsSectionLayout(heading, width)
+        heading:ClearAllPoints()
+        PixelUtil.SetPoint(heading, "TOPLEFT", page, "TOPLEFT", left, -top, 0, 0)
+        top = top + height
+    end
+    host:ClearAllPoints()
+    PixelUtil.SetPoint(host, "TOPLEFT", page, "TOPLEFT", left, -top, 0, 0)
+    PixelUtil.SetWidth(host, width, 1)
+    page:SetHeight(math.max(1, top + page._exV2Session:GetHeight() + V2_MODULE_PAGE_BOTTOM))
+    local scrollFrame = page._exV2ScrollFrame
+    if scrollFrame and scrollFrame.UpdateScrollChildRect then
+        scrollFrame:UpdateScrollChildRect()
+    end
+end
+
+local function MountV2ModulePage(page, declaration, owner, title, description, scrollFrame)
+    local host = page._exV2Host
+    if not host then
+        host = CreateFrame("Frame", nil, page)
+        host._isPersistent = true
+        host:SetHeight(1)
+        page._exV2Host = host
+        page:HookScript("OnSizeChanged", function(self) LayoutV2ModulePage(self) end)
+    end
+    if title or description then
+        page._exV2Heading = EXUI:CreateSettingsSection(page, { kind = "page", title = title, description = description })
+    end
+    page._exV2ScrollFrame = scrollFrame
+    local ownerHeightChanged = owner.onHeightChanged
+    owner.onHeightChanged = function(height)
+        LayoutV2ModulePage(page)
+        if ownerHeightChanged then ownerHeightChanged(height) end
+    end
+    local _, width = V2ModulePageColumn(page)
+    host:SetWidth(width)
+    page._exV2Owner = owner
+    local session, issue
+    if type(declaration) == "string" then
+        session = EXUI:MountSettingsPageV2(host, declaration, owner)
+    else
+        session, issue = EXUI:MountSettingsDeclarationV2(host, declaration, owner)
+    end
+    if not session then error("module settings V2: " .. issue.path .. ": " .. issue.message, 2) end
+    page._exV2Session = session
+    LayoutV2ModulePage(page)
+    return page._exV2Session
+end
+
+function EXUI:MountModuleSettingsDeclarationV2(page, declaration, owner, title, description, scrollFrame)
+    ReleaseV2ModulePage(page)
+    return MountV2ModulePage(page, declaration, owner, title, description, scrollFrame)
+end
+
+function EXUI:ReleaseModuleSettingsPage(page)
+    page = page or EXUI._InternalPageFrame
+    if not page then
         return false
     end
 
-    -- Grid 编辑器的工具栏/浮层并不挂在页面 root 下；先正常退出该页的编辑会话，
-    -- 再归还 widget，避免隐藏页面仍保留可操作的编辑器状态。
-    if grid and grid.IsLiveEditing and grid.LiveContainer == page then
-        grid:ToggleLiveEdit(page)
-        grid.LiveContainer = nil
-    end
+    ReleaseV2ModulePage(page)
 
-    local cardSession = grid and type(grid.GetMountedCardSession) == "function"
-        and grid:GetMountedCardSession(page) or nil
-    if cardSession then
-        cardSession:Release()
-        page._exCardSession = nil
-    elseif grid then
-        grid:ReleaseContainerWidgets(page)
-    end
-
-    -- Grid 之外由设置页直接创建的操作按钮同样不能被 PageCache root 强引用。
+    -- 设置页直接创建的操作按钮同样不能被 PageCache root 强引用。
     -- 它们不是对象池控件，离页时解绑回调并脱离页面；下次进入时按当前模块状态重建。
     for _, child in ipairs({ page:GetChildren() }) do
         if child._exModuleSettingsTransient then
@@ -1635,57 +1657,24 @@ end
 -- 首页
 -- =========================================================
 
--- 确认弹窗（仅注册一次）
-StaticPopupDialogs["EXWIND_CONFIRM_RESET"] = {
-    text = L["确定要重置 ExwindTools 的所有配置并重载吗？\n|cffff4444此操作不可逆！|r"],
-    button1 = L["确定重置"],
-    button2 = L["取消"],
-    OnAccept = function()
-        ExwindTools:ResetAddonModuleStorage("TOOLS")
-        C_UI.Reload()
-    end,
-    timeout = 0,
-    whileDead = true,
-    hideOnEscape = true,
-    preferredIndex = 3,
-}
+local function ResetModuleConfirmed(moduleKey)
+    if not moduleKey then return end
+    local db = ExwindTools:GetModuleDBStorage(moduleKey)
+    if db and db.ModuleDB then
+        db.ModuleDB[moduleKey] = nil
+    end
+    C_UI.Reload()
+end
 
-StaticPopupDialogs["EXWIND_CONFIRM_RESET_MODULE"] = {
-    text = "%s",
-    button1 = L["确定重置"],
-    button2 = L["取消"],
-    OnAccept = function(self, data)
-        local moduleKey = data and data.moduleKey
-        if not moduleKey then return end
-
-        local db = ExwindTools:GetModuleDBStorage(moduleKey)
-        if db and db.ModuleDB then
-            db.ModuleDB[moduleKey] = nil
-        end
-
-        C_UI.Reload()
-    end,
-    timeout = 0,
-    whileDead = true,
-    hideOnEscape = true,
-    preferredIndex = 3,
-}
 
 function EXUI:ShowHomePage()
-    local page, isNew = EXUI:GetCachedPage("Home", EXUI.RightScrollChild)
+    EXUI:SyncScrollChildWidths()
+    local page = EXUI:GetCachedPage("Home", EXUI.RightScrollChild)
     EXUI.ActivePageFrame = page
     EXUI._InternalPageFrame = page
-
-    if isNew then
-        local label = EXUI:CreateVisualFontString(page, EXFONTFRAME)
-        label:SetFontObject("GameFontHighlight")
-        label:SetPoint("TOPLEFT", page, "TOPLEFT", 20, -24)
-        label:SetText("开发中")
-        label:SetTextColor(unpack(GC.text))
-    end
-
-    page:SetHeight(96)
-    EXUI.RightScrollChild:SetHeight(96)
+    EXUI:MountModuleSettingsDeclarationV2(page, { version = 2, cards = {} }, {},
+        L["首页概览"], L["开发中"], EXUI.RightScrollFrame)
+    EXUI.RightScrollChild:SetHeight(page:GetHeight())
 end
 
 -- =========================================================
@@ -1697,36 +1686,7 @@ local function ModuleHasSettingsPage(meta)
     return type(meta) == "table" and meta.HideCfg ~= true
 end
 
--- 模块管理页图标。文件名使用完整模块键，避免不同产品出现同名模块时互相覆盖。
-local MODULE_CARD_ICON_TEXTURES = {
-    ["ExTools.MiniTools"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_MiniTools.png",
-    ["ExTools.CombatTimer"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_CombatTimer.png",
-    ["ExTools.CombatAlert"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_CombatAlert.png",
-    ["ExTools.PlayerPosition"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_PlayerPosition.png",
-    ["ExTools.ChatChannelBar"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_ChatChannelBar.png",
-    ["ExTools.AutoBuy"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_AutoBuy.png",
-    ["ExTools.GossipID"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_GossipID.png",
-    ["ExTools.MicroMenu"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_MicroMenu.png",
-    ["ExTools.RaidMarkerPanel"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_RaidMarkerPanel.png",
-    ["ExTools.BattleResurrection"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_BattleResurrection.png",
-    ["ExM+Info.MDTIconHook"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExMInfo_MDTIconHook.png",
-    ["ExM+Info.MythicIcon"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExMInfo_MythicIcon.png",
-    ["ExM+Info.TeleMsg"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExMInfo_TeleMsg.png",
-    ["ExM+.MythicDamage"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExM_MythicDamage.png",
-    ["ExTools.PveKeystoneInfo"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_PveKeystoneInfo.png",
-    ["ExTools.PlayerHealAbsorb"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_PlayerHealAbsorb.png",
-    ["ExTools.PlayerShield"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_PlayerShield.png",
-    ["ExClass.FocusCast"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExClass_FocusCast.png",
-    ["ExTools.SpellQueue"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_SpellQueue.png",
-    ["ExClass.SpellEffectAlpha"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExClass_SpellEffectAlpha.png",
-    ["ExTools.PlayerStats"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_PlayerStats.png",
-    ["ExTools.YYSound"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_YYSound.png",
-    ["ExTools.CastSequence"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_CastSequence.png",
-    ["ExClass.RangeCheck"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExClass_RangeCheck.png",
-    ["ExClass.NoMoveSkillAlert"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExClass_NoMoveSkillAlert.png",
-    ["ExClass.BrewmasterStagger"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExClass_BrewmasterStagger.png",
-    ["ExTools.TransformTimer"] = "Interface\\AddOns\\ExwindCore\\Textures\\LOGO\\ExTools_TransformTimer.png",
-}
+-- 模块管理页图标：与左侧导航共用 TOOLS_NAVIGATION_ICONS（统一图标库，白色线条，跟随文字色）。
 
 local MODULE_MANAGEMENT_PAGE_ID = "ExwindTools.ModuleManagement"
 
@@ -1746,195 +1706,99 @@ local function SortedCategoryModules(category)
     return enabled
 end
 
+
 local function CreateModuleManagementOwner(page, categories)
-    local owner = { controls = {}, components = {}, actions = {}, predicates = {}, sources = {}, texts = {} }
+    local owner = { controls = {}, actions = {}, sources = {}, texts = {} }
     for _, category in ipairs(categories) do
         local categoryID = category
         owner.sources["category-" .. categoryID] = function()
             return SortedCategoryModules(categoryID)
         end
     end
-    owner.onHeightChanged = function(height)
-        page.cardsContainer:SetHeight(math.max(1, height))
-        page:SetHeight(height + 102)
-        EXUI.RightScrollChild:SetHeight(page:GetHeight())
+    owner.texts.moduleName = function(scope)
+        local meta = scope.item
+        local iconID = TOOLS_NAVIGATION_ICONS[meta.Key]
+        local icon = iconID and ("|T" .. EXUI:GetIcon(iconID) .. ":0|t ") or "EX "
+        return icon .. (meta.Name or meta.Key)
     end
-    owner.components.moduleRow = {
-        mount = function(host, context)
-            local meta = context.scope.item
-            host._moduleKey = meta.Key
-            if not host._moduleRowVisuals then
-                local iconTile = CreateFrame("Frame", nil, host)
-                iconTile:SetSize(42, 42)
-                iconTile:SetPoint("LEFT", host, "LEFT", 12, 0)
-                local iconArt = EXUI:CreateVisualTexture(iconTile, EXBASEFRAME)
-                iconArt:SetPoint("TOPLEFT", 3, -3)
-                iconArt:SetPoint("BOTTOMRIGHT", -3, 3)
-                local iconMark = EXUI:CreateVisualFontString(iconTile, EXFONTFRAME)
-                iconMark:SetFont(defaultFontPath, 15, "OUTLINE")
-                iconMark:SetPoint("CENTER")
-                iconMark:SetText("EX")
-                local name = EXUI:CreateVisualFontString(host, EXFONTFRAME)
-                name:SetFont(defaultFontPath, 15, "OUTLINE")
-                name:SetPoint("TOPLEFT", host, "TOPLEFT", 66, -11)
-                name:SetJustifyH("LEFT")
-                local description = EXUI:CreateVisualFontString(host, EXFONTFRAME)
-                description:SetFont(defaultFontPath, 12, "")
-                description:SetPoint("TOPLEFT", name, "BOTTOMLEFT", 0, -4)
-                description:SetJustifyH("LEFT")
-                description:SetWordWrap(true)
-                description:SetMaxLines(2)
-                local separator = EXUI:CreateSettingsSeparator(host, 1)
-                separator:SetPoint("TOPLEFT", host, "TOPLEFT", 0, 0)
-                host._moduleRowVisuals = {
-                    iconTile = iconTile, iconArt = iconArt, iconMark = iconMark,
-                    name = name, description = description, separator = separator,
-                }
-            end
-            local visuals = host._moduleRowVisuals
-            visuals.iconTile:Show()
-            visuals.name:Show()
-            visuals.description:Show()
-            host.EnableSwitch = EXUI:CreateCheckbox(host, "", ModuleManagementEnabled(meta),
-                context:Guard(function(checked)
-                    ExwindTools:SetModuleEnabled(meta.Key, checked)
-                    C_Timer.After(0, function()
-                        if page.moduleListSession and page:IsVisible() then
-                            page.moduleListSession:Refresh()
-                        end
-                    end)
-                end))
-            host.EnableSwitch:SetSize(44, 28)
-            host.EnableSwitch:SetPoint("TOPRIGHT", host, "TOPRIGHT", -14, -11)
-            EXUI:PrepareSettingsListControl(host.EnableSwitch, { presentation = "switch", hideLabel = true })
-            return host
-        end,
-        update = function(host, context)
-            local meta = context.scope.item
-            local key = meta.Key
-            local enabled = ModuleManagementEnabled(meta)
-            local visuals = host._moduleRowVisuals
-            visuals.separator:SetShown(context.scope.index > 1)
-            local iconPath = MODULE_CARD_ICON_TEXTURES[key]
-            visuals.iconArt:SetShown(iconPath ~= nil)
-            visuals.iconMark:SetShown(iconPath == nil)
-            if iconPath then
-                visuals.iconArt:SetTexture(iconPath)
-                visuals.iconArt:SetDesaturated(not enabled)
-                local brightness = enabled and 1 or 0.42
-                visuals.iconArt:SetVertexColor(brightness, brightness, brightness, 1)
-            end
-            visuals.iconMark:SetTextColor(unpack(enabled and GC.accent or GC.textDisabled))
-            visuals.name:SetText(meta.Name or key)
-            visuals.name:SetTextColor(unpack(enabled and GC.text or GC.textDisabled))
-            visuals.description:SetText(meta.Desc or "")
-            visuals.description:SetTextColor(unpack(enabled and GC.textDim or GC.textDisabled))
-            host.EnableSwitch:SetChecked(enabled)
-            EXUI:ApplyControlAppearance(host.EnableSwitch)
-        end,
-        measure = function(host, _, width)
-            local visuals = host._moduleRowVisuals
-            local textWidth = math.max(80, width - 130)
-            visuals.name:SetWidth(textWidth)
-            visuals.description:SetWidth(textWidth)
-            return math.max(56, math.ceil(11 + visuals.name:GetStringHeight()
-                + 4 + visuals.description:GetStringHeight() + 8))
-        end,
-        layout = function(host, context, width, height)
-            host:SetSize(width, height)
-            local textWidth = math.max(80, width - 130)
-            host._moduleRowVisuals.name:SetWidth(textWidth)
-            host._moduleRowVisuals.description:SetWidth(textWidth)
-            host._moduleRowVisuals.separator:SetWidth(width)
-        end,
-        setEnabled = function() end,
-        setVisible = function(host, context, visible) host:SetShown(visible) end,
-        release = function(host)
-            local factory = _G.ExwindFactory
-            EXUI:RestoreSettingsListControl(host.EnableSwitch)
-            factory:Release(host.EnableSwitch._fromPool, host.EnableSwitch)
-            host.EnableSwitch = nil
-            host._moduleKey = nil
-            local visuals = host._moduleRowVisuals
-            visuals.iconTile:Hide()
-            visuals.name:Hide()
-            visuals.description:Hide()
-            visuals.separator:Hide()
-        end,
-    }
+    owner.texts.moduleDescription = function(scope) return scope.item.Desc or "" end
+    owner.controls.moduleEnabled = EXUI:CreateSettingsV2Control({ controlType = "switch" }, function(context)
+        local meta = context.scope.item
+        local binding = EXUI:CreateSettingsV2Binding(MODULE_MANAGEMENT_PAGE_ID, ExwindTools.DB, "LoadByKey")
+        binding.Read = function() return ModuleManagementEnabled(meta) end
+        binding.Write = function(_, checked)
+            local changed = ExwindTools:SetModuleEnabled(meta.Key, checked)
+            C_Timer.After(0, function()
+                if page._exV2Session and page:IsVisible() then page._exV2Session:Refresh() end
+            end)
+            return changed
+        end
+        return binding
+    end)
+    local function SetAll(context, enabled)
+        for _, meta in ipairs(ExwindTools.ModuleList) do
+            if ModuleHasSettingsPage(meta) then ExwindTools:SetModuleEnabled(meta.Key, enabled) end
+        end
+        context:RefreshPage()
+    end
+    owner.actions.enableAll = function(context) SetAll(context, true) end
+    owner.actions.disableAll = function(context) SetAll(context, false) end
     return owner
 end
 
 function EXUI:ShowLoadSettingsPage()
     EXUI:SyncScrollChildWidths()
-    local page, isNew = EXUI:GetCachedPage("LoadSettings", EXUI.RightScrollChild)
+    local page = EXUI:GetCachedPage("LoadSettings", EXUI.RightScrollChild)
     EXUI.ActivePageFrame = page
     EXUI._InternalPageFrame = page
 
-    if isNew then
-        local title = EXUI:CreateVisualFontString(page, EXFONTFRAME)
-        title:SetFont(defaultFontPath, 20, "OUTLINE")
-        title:SetPoint("TOPLEFT", 20, -15)
-        title:SetText(L["模块管理"])
-        title:SetTextColor(unpack(GC.text))
-        local hint = EXUI:CreateVisualFontString(page, EXFONTFRAME)
-        hint:SetFontObject("GameFontHighlight")
-        hint:SetPoint("TOPLEFT", 20, -45)
-        hint:SetText(L["按左侧路由分类管理模块；禁用立即生效，重新启用后需要 /reload。"])
-        hint:SetTextColor(unpack(GC.textDim))
-
-        local enableAll = EXUI:CreateButton(page, 120, 28, L["全部启用"], function()
-            for _, meta in ipairs(ExwindTools.ModuleList) do
-                if ModuleHasSettingsPage(meta) then ExwindTools:SetModuleEnabled(meta.Key, true) end
-            end
-            page.moduleListSession:Refresh()
-        end, { variant = "primary", compact = true })
-        enableAll:SetPoint("TOPRIGHT", -150, -12)
-        local disableAll = EXUI:CreateButton(page, 120, 28, L["全部禁用"], function()
-            for _, meta in ipairs(ExwindTools.ModuleList) do
-                if ModuleHasSettingsPage(meta) then ExwindTools:SetModuleEnabled(meta.Key, false) end
-            end
-            page.moduleListSession:Refresh()
-        end, { variant = "danger", compact = true })
-        disableAll:SetPoint("TOPRIGHT", -20, -12)
-
-        page.cardsContainer = CreateFrame("Frame", nil, page)
-        page.cardsContainer:SetPoint("TOPLEFT", page, "TOPLEFT", 15, -82)
-        page.cardsContainer:SetPoint("TOPRIGHT", page, "TOPRIGHT", -15, -82)
-        page.cardsContainer:SetHeight(1)
-
-        local seen, categories = {}, {}
-        for _, meta in ipairs(ExwindTools.ModuleList) do
-            if ModuleHasSettingsPage(meta) then
-                local category = tonumber(meta.Category) or 1
-                if not seen[category] then
-                    seen[category] = true
-                    categories[#categories + 1] = category
-                end
+    local seen, categories = {}, {}
+    for _, meta in ipairs(ExwindTools.ModuleList) do
+        if ModuleHasSettingsPage(meta) then
+            local category = tonumber(meta.Category) or 1
+            if not seen[category] then
+                seen[category] = true
+                categories[#categories + 1] = category
             end
         end
-        table.sort(categories)
-        local cards = {}
-        for _, category in ipairs(categories) do
-            cards[#cards + 1] = {
-                id = "category-card-" .. category, kind = "card",
-                title = (ExwindTools.Cate and ExwindTools.Cate[category]) or (L["分类"] .. " " .. category),
-                children = {{
-                    id = "category-list-" .. category, kind = "repeat", source = "category-" .. category,
-                    template = { id = "module-row-" .. category, kind = "component", ref = "moduleRow" },
-                }},
-            }
-        end
-        EXUI:RegisterSettingsPageV2(MODULE_MANAGEMENT_PAGE_ID, { version = 2, cards = cards })
-        page.moduleListSession = EXUI:MountSettingsPageV2(page.cardsContainer,
-            MODULE_MANAGEMENT_PAGE_ID, CreateModuleManagementOwner(page, categories))
-    else
-        page.moduleListSession:Refresh()
     end
+    table.sort(categories)
+    local cards = {{ id = "module-actions", kind = "card", title = L["模块管理"], children = {
+        { id = "module-batch", kind = "setting", label = L["模块管理"], children = {
+            { id = "module-enable-all", kind = "button", text = L["全部启用"], action = "enableAll", presentation = "primary" },
+            { id = "module-disable-all", kind = "button", text = L["全部禁用"], action = "disableAll", presentation = "danger" },
+        } },
+    } }}
+    for _, category in ipairs(categories) do
+        cards[#cards + 1] = {
+            id = "category-card-" .. category, kind = "card",
+            title = (ExwindTools.Cate and ExwindTools.Cate[category]) or (L["分类"] .. " " .. category),
+            children = {{ id = "category-table-" .. category, kind = "table", columns = {
+                { title = L["名称"] }, { title = L["模块说明"] }, { title = L["启用"] },
+            }, children = {{
+                id = "category-list-" .. category, kind = "repeat", source = "category-" .. category,
+                template = { id = "module-row-" .. category, kind = "row", children = {
+                    { id = "module-name-cell-" .. category, kind = "cell", children = {
+                        { id = "module-name-" .. category, kind = "text", textSource = "moduleName" },
+                    } },
+                    { id = "module-description-cell-" .. category, kind = "cell", children = {
+                        { id = "module-description-" .. category, kind = "text", textSource = "moduleDescription" },
+                    } },
+                    { id = "module-enabled-cell-" .. category, kind = "cell", children = {
+                        { id = "module-enabled-" .. category, kind = "control", controlType = "switch", ref = "moduleEnabled" },
+                    } },
+                } },
+            }} }},
+        }
+    end
+    EXUI:MountModuleSettingsDeclarationV2(page, { version = 2, cards = cards },
+        CreateModuleManagementOwner(page, categories), L["模块管理"],
+        L["按左侧路由分类管理模块；禁用立即生效，重新启用后需要 /reload。"], EXUI.RightScrollFrame)
+    EXUI.RightScrollChild:SetHeight(page:GetHeight())
 end
+
 -- =========================================================
--- 模块设置页面 (ExwindGrid Layout)
--- 使用原生 Grid 布局引擎渲染
+-- 模块设置页面：V2 声明与独立 owner。
 -- =========================================================
 function EXUI:ShowModuleSettingsPage()
     if not EXUI.CurrentModule then
@@ -1956,47 +1820,11 @@ function EXUI:ShowModuleSettingsPage()
 
     EXUI.SwitchingModule = true
 
-    -- 现有 ModuleDefinition / legacy layout 与 Central basicIcon 是三条显式
-    -- 路线；Central 不会被包装或回退进前两者。
     local definition = ExwindTools.ModuleDefinitions and ExwindTools.ModuleDefinitions[EXUI.CurrentModule]
     local v2Entry = EXUI.ModuleSettingsV2Pages[EXUI.CurrentModule]
     local centralController = type(EXUI.GetCentralModuleController) == "function"
         and EXUI:GetCentralModuleController(EXUI.CurrentModule) or nil
-    local registeredSettingsPage = type(EXUI.GetSettingsPage) == "function"
-        and EXUI:GetSettingsPage(EXUI.CurrentModule) or nil
-    local layoutData = v2Entry and { version = 2 }
-        or centralController
-        and ((type(centralController.BuildSettingsDeclaration) == "function"
-            and centralController:BuildSettingsDeclaration()) or centralController:BuildGridLayout())
-        or (definition and definition:GetLayout()
-            or registeredSettingsPage
-            or ExwindTools.RegisteredLayouts[EXUI.CurrentModule])
-    local usesV2Declaration = v2Entry ~= nil
-    local ordinarySettingsEntry = centralController ~= nil or definition ~= nil or registeredSettingsPage ~= nil
-    local hasSections = type(layoutData) == "table" and type(layoutData.sections) == "table"
-    local hasCards = type(layoutData) == "table" and type(layoutData.cards) == "table"
-    local pageDeclarationMode
-    if usesV2Declaration then
-        pageDeclarationMode = "v2"
-    elseif ordinarySettingsEntry then
-        if type(layoutData) ~= "table" or layoutData.version ~= 1
-            or not hasSections or hasCards then
-            error("ordinary settings modules require version=1 sections; special cards use RegisterModuleLayout with their owning page", 2)
-        end
-        pageDeclarationMode = "sections"
-    elseif type(layoutData) == "table" and layoutData.version == 1 and hasSections ~= hasCards then
-        -- RegisterModuleLayout is the retained legacy/special declaration entry.
-        -- Its owning page may choose typed sections, free cards, or the old flat
-        -- Grid path; ordinary controller/definition/registered pages cannot.
-        pageDeclarationMode = hasSections and "sections" or "cards"
-    end
-    local usesCardDeclaration = pageDeclarationMode ~= nil and pageDeclarationMode ~= "v2"
-    local declaresStructuredPage = type(layoutData) == "table"
-        and (layoutData.version ~= nil or layoutData.cards ~= nil or layoutData.sections ~= nil)
-    if declaresStructuredPage and not usesCardDeclaration and not usesV2Declaration then
-        error("unsupported settings page declaration for " .. tostring(EXUI.CurrentModule), 2)
-    end
-    if layoutData and _G.ExwindGrid then
+    if v2Entry or definition then
         EXUI.RightPanel:Show()
         -- [Fix] 这里的 MainFrame 就是原生 Frame 了，不再需要 .frame
         EXUI.RightPanel:SetFrameLevel(EXUI.MainFrame:GetFrameLevel() + 10)
@@ -2035,9 +1863,7 @@ function EXUI:ShowModuleSettingsPage()
             EXUI.ModuleScrollFrame:SetVerticalScroll(0)
         end
 
-        -- 先确定 Dock 的占位高度和旧预览的释放时机。标准 PreviewSurface 的
-        -- mount/update 必须等待下方当前模块 Grid 完成 Render：它们会同步读取
-        -- Grid 的 active ContainerState，不能读取切换前模块留下的状态。
+        -- 先确定 Dock 占位和预览释放时机；预览必须在当前 V2 会话挂载后绑定。
         local previewRenderer = nil
         local previewContext = nil
         do
@@ -2062,25 +1888,9 @@ function EXUI:ShowModuleSettingsPage()
             end
         end
 
-        -- 获取或创建 Grid 容器页面 (挂载到 ScrollChild 上)
+        -- 获取或创建设置页容器 (挂载到 ScrollChild 上)。
         local page, isNew = EXUI:GetCachedPage("ModuleGrid_" .. EXUI.CurrentModule, EXUI.ModuleScrollChild)
-        page._exGridPage = true
-        local previousCardSession = type(_G.ExwindGrid.GetMountedCardSession) == "function"
-            and _G.ExwindGrid:GetMountedCardSession(page) or nil
-        if previousCardSession then previousCardSession:Release() end
-        page._exCardSession = nil
-        if page._exV2Session then
-            page._exV2Session:Release()
-            page._exV2Session = nil
-            page._exV2Owner = nil
-        end
-        if usesCardDeclaration and _G.ExwindGrid.ContainerStates[page] then
-            _G.ExwindGrid:ReleaseContainerWidgets(page)
-        end
-        if not usesCardDeclaration and EXUI.ShellPanel and _G.ExwindGrid then
-            local metrics = EXUI.ShellPanel:GetMetrics()
-            _G.ExwindGrid:SetContainerCols(page, metrics.splitGridCols)
-        end
+        EXUI:ReleaseModuleSettingsPage(page)
         EXUI.ActivePageFrame = page
         EXUI.ActivePageScrollFrame = EXUI.ModuleScrollFrame
         EXUI._InternalPageFrame = page
@@ -2097,68 +1907,35 @@ function EXUI:ShowModuleSettingsPage()
         if EXUI.NoLayoutLabel then EXUI.NoLayoutLabel:Hide() end
 
         -- 渲染布局
-        local config = centralController and centralController:GetConfig() or ExwindTools:GetModuleDB(EXUI.CurrentModule)
+        local config = centralController and centralController:GetConfig()
+            or definition and definition:GetConfig() or ExwindTools:GetModuleDB(EXUI.CurrentModule)
         local currentModuleKey = EXUI.CurrentModule
-        if usesV2Declaration then
+        do
             local mountContext = {
-                pageId = v2Entry.pageId,
+                pageId = v2Entry and v2Entry.pageId or currentModuleKey,
                 moduleKey = currentModuleKey,
                 config = config,
                 settingsPageTitle = moduleMeta.Name,
                 settingsPageDescription = moduleMeta.Desc,
                 scrollFrame = EXUI.ModuleScrollFrame,
             }
-            local owner = v2Entry.ownerFactory(mountContext)
+            local ownerFactory = v2Entry and v2Entry.ownerFactory or definition and definition.definition.settings.ownerFactory
+            local owner = ownerFactory and ownerFactory(mountContext) or {}
             if type(owner) ~= "table" then
                 error("module V2 owner factory must return a table: " .. tostring(currentModuleKey), 2)
             end
-            local ownerHeightChanged = owner.onHeightChanged
-            owner.onHeightChanged = function(height)
-                page:SetHeight(math.max(1, height + 52))
-                if EXUI.ModuleScrollFrame.UpdateScrollChildRect then
-                    EXUI.ModuleScrollFrame:UpdateScrollChildRect()
-                end
-                if ownerHeightChanged then ownerHeightChanged(height) end
+            if owner.binding == nil then
+                owner.binding = { moduleKey = currentModuleKey, config = config }
             end
-            page._exV2Owner = owner
-            page._exV2Session = EXUI:MountSettingsPageV2(page, v2Entry.pageId, owner)
+            local declaration = v2Entry and v2Entry.pageId or definition:GetLayout()
+            MountV2ModulePage(page, declaration, owner, moduleMeta.Name, moduleMeta.Desc, EXUI.ModuleScrollFrame)
             if type(owner.AttachSession) == "function" then
                 owner:AttachSession(page._exV2Session)
             end
             ExwindTools:UpdateState(currentModuleKey .. ".PanelRendered", GetTime())
-        elseif usesCardDeclaration then
-            local sharedCardDefaults = type(EXUI.GetSettingsCardLayoutDefaults) == "function"
-                and EXUI:GetSettingsCardLayoutDefaults() or nil
-            local baseBottom = type(sharedCardDefaults) == "table" and sharedCardDefaults.bottom
-                or (_G.ExwindGrid.CardLayoutDefaults and _G.ExwindGrid.CardLayoutDefaults.bottom)
-                or 0
-            local mountContext = {
-                pageId = currentModuleKey,
-                regionId = "module-settings",
-                binding = centralController and centralController.binding or nil,
-                config = config,
-                moduleKey = currentModuleKey,
-                settingsPageTitle = moduleMeta.Name,
-                settingsPageDescription = moduleMeta.Desc,
-                scrollFrame = EXUI.ModuleScrollFrame,
-                layoutDefaults = { bottom = (tonumber(baseBottom) or 0) + 52 },
-            }
-            if pageDeclarationMode == "sections" then
-                page._exCardSession = _G.ExwindGrid:MountSettingsDeclaration(page, layoutData, mountContext)
-            else
-                page._exCardSession = _G.ExwindGrid:MountCards(page, layoutData, mountContext)
-            end
-            ExwindTools:UpdateState(currentModuleKey .. ".PanelRendered", GetTime())
-        else
-            page._exCardSession = nil
-            _G.ExwindGrid:Render(page, layoutData, config, currentModuleKey, function()
-                -- Render 完成后通知当前模块面板已刷新（各模块可订阅此事件更新动态内容）
-                ExwindTools:UpdateState(currentModuleKey .. ".PanelRendered", GetTime())
-            end)
         end
 
-        -- Render 已同步创建并激活 currentModuleKey 的 ContainerState；仅此时标准
-        -- PreviewSurface 才能绑定正确的 Grid 容器，避免模块切换时读取旧模块状态。
+        -- 当前 V2 会话已挂载，预览可以查询本模块的设置控件。
         if centralController then
             local dock = EXUI.ModulePreviewDock
             centralController:MountPanel(dock)
@@ -2184,35 +1961,27 @@ function EXUI:ShowModuleSettingsPage()
             EXUI.PendingModuleScrollRestore = nil
         end
 
-        local resetBtn = EXUI:CreateSmallButton(page, L["重置当前模块设置"], function()
+        local resetBtn = EXUI:CreateButton(page, 120, GM.size.buttonHeight, L["重置当前模块设置"], function()
             local moduleName = (moduleMeta and moduleMeta.Name) or EXUI.CurrentModule or L["当前模块"]
             local message = string.format(L["你将重置%s模块设置，并重载。是否确定？"], moduleName)
-            StaticPopup_Show("EXWIND_CONFIRM_RESET_MODULE", message, nil, { moduleKey = EXUI.CurrentModule })
-        end)
+            local moduleKey = EXUI.CurrentModule
+            EXUI:ShowConfirmDialog({
+                sourceAddon = "ExwindTools", sourceModule = moduleName,
+                title = L["重置当前模块设置"], text = message,
+                confirmText = L["确定重置"], cancelText = L["取消"], danger = true,
+                onConfirm = function()
+                    ResetModuleConfirmed(moduleKey)
+                end,
+            })
+        end, { variant = "danger", compact = true })
+        local resetLabel = resetBtn:GetFontString()
+        resetBtn:SetWidth(math.max(GM.size.buttonMinWidth,
+            math.ceil(resetLabel:GetUnboundedStringWidth()) + GM.space.buttonPaddingX * 2))
         resetBtn:SetPoint("BOTTOMRIGHT", page, "BOTTOMRIGHT", -20, 16)
         resetBtn:SetFrameLevel(page:GetFrameLevel() + 50)
         resetBtn._exModuleSettingsTransient = true
-        if not usesCardDeclaration and not usesV2Declaration then
-            page:SetHeight((page:GetHeight() or 1) + 52)
-        end
-
-        -- [New v4.2] 如果处于开发者模式，在右上角显示“编辑”按钮
-        if ExwindTools.State.DevMode and not usesV2Declaration then
-            local editBtn = EXUI:CreateSmallButton(page, L["|cff00ff00编辑布局|r"], function()
-                _G.ExwindGrid:ToggleLiveEdit(page, EXUI.CurrentModule)
-            end)
-            if usesCardDeclaration then
-                -- Card 标题栏右侧属于折叠按钮。开发者入口放进已经为 reset
-                -- 预留的 footer，避免以更高 frame level 盖住第一张卡的交互。
-                editBtn:SetPoint("BOTTOMLEFT", page, "BOTTOMLEFT", 20, 16)
-            else
-                editBtn:SetPoint("TOPRIGHT", page, "TOPRIGHT", -20, -5)
-            end
-            editBtn:SetFrameLevel(page:GetFrameLevel() + 50)
-            editBtn._exModuleSettingsTransient = true
-        end
     else
-        -- 模块未注册 Grid 布局，显示提示
+        -- 模块未注册 V2 设置页，显示提示。
         EXUI:ReleaseMountedModulePreview()
         EXUI.RightPanel:Show()
         EXUI.RightPanel:SetFrameLevel(EXUI.MainFrame:GetFrameLevel() + 10)
@@ -2235,97 +2004,6 @@ end
 -- =========================================================
 -- 辅助函数
 -- =========================================================
-local function PaintToolsButton(button)
-    local enabled = not button.IsEnabled or button:IsEnabled()
-    local variant = button._toolsButtonVariant or "secondary"
-    local fill, edge, text
-    if not enabled then
-        fill, edge, text = GC.disabledFill, GC.disabledBorder, GC.textDisabled
-    elseif variant == "primary" then
-        fill = button._toolsButtonPressed and GC.accentActive
-            or (button._toolsButtonHover and GC.accentHover or GC.accent)
-        edge, text = fill, GC.primaryText
-    elseif button._toolsButtonPressed then
-        fill, edge, text = GC.secondaryPressedFill, GC.secondaryBorder, GC.secondaryPressedText
-    elseif button._toolsButtonHover then
-        fill, edge, text = GC.secondaryHoverFill, GC.secondaryHoverBorder, GC.white
-    else
-        fill, edge, text = GC.transparent, GC.secondaryBorder, GC.secondaryText
-    end
-    button:SetBackdropColor(unpack(fill))
-    button:SetBackdropBorderColor(unpack(edge))
-    if button.Label then button.Label:SetTextColor(unpack(text)) end
-end
-
-local function BindToolsButtonAppearance(button, variant)
-    button._toolsButtonVariant = variant
-    button:SetScript("OnEnter", function(self)
-        self._toolsButtonHover = true
-        PaintToolsButton(self)
-    end)
-    button:SetScript("OnLeave", function(self)
-        self._toolsButtonHover = nil
-        self._toolsButtonPressed = nil
-        PaintToolsButton(self)
-    end)
-    button:SetScript("OnMouseDown", function(self, mouseButton)
-        if mouseButton == "LeftButton" and self:IsEnabled() then
-            self._toolsButtonPressed = true
-            PaintToolsButton(self)
-        end
-    end)
-    button:SetScript("OnMouseUp", function(self)
-        self._toolsButtonPressed = nil
-        PaintToolsButton(self)
-    end)
-    button:HookScript("OnEnable", PaintToolsButton)
-    button:HookScript("OnDisable", function(self)
-        self._toolsButtonPressed = nil
-        PaintToolsButton(self)
-    end)
-    PaintToolsButton(button)
-end
-
-function EXUI:CreateActionButton(parent, text, onClick)
-    local btn = CreateFrame("Button", nil, parent, "BackdropTemplate")
-    btn:SetSize(180, 40)
-    btn:SetBackdrop(FRAME_BACKDROP_FLAT)
-    btn:SetBackdropColor(unpack(GC.accent))
-    btn:SetBackdropBorderColor(unpack(GC.accent))
-
-    local btnText = EXUI:CreateVisualFontString(btn, EXFONTFRAME)
-    btn.Label = btnText
-    btnText:SetFontObject("GameFontNormal")
-    btnText:SetPoint("CENTER")
-    btnText:SetText(text)
-    btnText:SetTextColor(unpack(GC.primaryText))
-
-    btn:SetScript("OnClick", onClick)
-    BindToolsButtonAppearance(btn, "primary")
-
-    return btn
-end
-
-function EXUI:CreateSmallButton(parent, text, onClick)
-    local btn = CreateFrame("Button", nil, parent, "BackdropTemplate")
-    btn:SetSize(120, 28)
-    btn:SetBackdrop(FRAME_BACKDROP_FLAT)
-    btn:SetBackdropColor(unpack(GC.transparent))
-    btn:SetBackdropBorderColor(unpack(GC.secondaryBorder))
-
-    local btnText = EXUI:CreateVisualFontString(btn, EXFONTFRAME)
-    btn.Label = btnText
-    btnText:SetFontObject("GameFontNormal")
-    btnText:SetPoint("CENTER")
-    btnText:SetText(text)
-    btnText:SetTextColor(unpack(GC.secondaryText))
-
-    btn:SetScript("OnClick", onClick)
-    BindToolsButtonAppearance(btn, "secondary")
-
-    return btn
-end
-
 -- =========================================================
 -- 状态总控页面
 -- =========================================================
@@ -2354,14 +2032,14 @@ function EXUI:ShowDiagnosticPage()
     local sectionWidth = 800
 
     local pageTitle = EXUI:CreateVisualFontString(page, EXFONTFRAME)
-    pageTitle:SetFont(defaultFontPath, 24, "OUTLINE")
+    pageTitle:SetFont(defaultFontPath, GM.font.pageTitle, "OUTLINE")
     pageTitle:SetPoint("TOPLEFT", 16, yOffset)
     pageTitle:SetText(L["状态总控"])
     pageTitle:SetTextColor(unpack(GC.text))
     yOffset = yOffset - 38
 
     local pageIntro = EXUI:CreateVisualFontString(page, EXFONTFRAME)
-    pageIntro:SetFont(defaultFontPath, 15, "")
+    pageIntro:SetFont(defaultFontPath, GM.font.title, "")
     pageIntro:SetPoint("TOPLEFT", 20, yOffset)
     pageIntro:SetWidth(sectionWidth)
     pageIntro:SetJustifyH("LEFT")
@@ -2450,7 +2128,7 @@ function EXUI:ShowDiagnosticPage()
         end
         sectionIndex = sectionIndex + 1
         local header = EXUI:CreateVisualFontString(page, EXFONTFRAME)
-        header:SetFont(defaultFontPath, 22, "OUTLINE")
+        header:SetFont(defaultFontPath, GM.font.dialogTitle, "OUTLINE")
         header:SetPoint("TOPLEFT", 16, yOffset)
         header:SetText(title)
         header:SetTextColor(unpack(GC.text))
@@ -2477,7 +2155,7 @@ function EXUI:ShowDiagnosticPage()
                 local width = colWidth * span + colGap * (span - 1)
 
                 local label = EXUI:CreateVisualFontString(page, EXFONTFRAME)
-                label:SetFont(defaultFontPath, 14, "OUTLINE")
+                label:SetFont(defaultFontPath, GM.font.label, "OUTLINE")
                 label:SetPoint("TOPLEFT", x, rowTop)
                 label:SetWidth(labelWidth)
                 label:SetJustifyH("LEFT")
@@ -2486,7 +2164,7 @@ function EXUI:ShowDiagnosticPage()
                 label:SetTextColor(unpack(GC.textPlaceholder))
 
                 local value = EXUI:CreateVisualFontString(page, EXFONTFRAME)
-                value:SetFont(defaultFontPath, 15, "")
+                value:SetFont(defaultFontPath, GM.font.fieldValue, "")
                 value:SetPoint("TOPLEFT", x + labelWidth + 10, rowTop)
                 value:SetWidth(width - labelWidth - 10)
                 value:SetJustifyH("LEFT")
@@ -2625,7 +2303,7 @@ function EXUI:ShowDiagnosticPage()
         end
 
         local modText = EXUI:CreateVisualFontString(page, EXFONTFRAME)
-        modText:SetFont(defaultFontPath, 15, "")
+        modText:SetFont(defaultFontPath, GM.font.title, "")
         modText:SetPoint("TOPLEFT", 20 + col * colWidth, rowY)
         modText:SetText(string.format("%s %s", statusIcon, meta.Name))
         modText:SetTextColor(unpack(statusColor))
@@ -2647,137 +2325,70 @@ end
 -- =========================================================
 -- 配置管理页面 (导出/导入)
 -- =========================================================
+
 function EXUI:ShowProfileManagerPage()
     EXUI:SyncScrollChildWidths()
-    local page, isNew = EXUI:GetCachedPage("ProfileManager", EXUI.RightScrollChild)
+    local page = EXUI:GetCachedPage("ProfileManager", EXUI.RightScrollChild)
     EXUI.ActivePageFrame = page
     EXUI._InternalPageFrame = page
 
     if not EXUI.ProfileState then
         EXUI.ProfileState = {
-            exportSelected = {},
-            importSelected = {},
-            parsedData = nil,
-            mergeMode = "replace",
+            exportSelected = {}, importSelected = {}, parsedData = nil, mergeMode = "replace",
+            profileName = L["我的配置"], authorName = "", note = "", importString = "",
+            previewName = "", previewAuthor = "", previewNote = "", previewVersion = L["等待解析..."],
         }
     end
-    local state = EXUI.ProfileState
-    if not isNew then
-        if page.RelayoutProfileManagerPage then page:RelayoutProfileManagerPage() end
-        EXUI.RightScrollChild:SetHeight(page:GetHeight())
-        return
+    local state, Export = EXUI.ProfileState, ExwindTools.Export
+    local owner = { binding = { moduleKey = "ExwindTools.ProfileManager", config = state },
+        controls = {}, sources = {}, texts = {}, actions = {}, predicates = {} }
+    owner.predicates.previewReadonly = function() return false end
+    local exportModules = Export:GetExportableModules()
+    owner.sources.exportModules = function() return exportModules end
+    owner.sources.importModules = function() return state.summary and state.summary.modules or {} end
+    owner.texts.exportModuleName = function(scope) return scope.item.name end
+    owner.texts.importModuleName = function(scope)
+        local module = scope.item
+        return module.exists and module.name or (module.name .. " (" .. L["未安装"] .. ")")
     end
-
-    local Export = ExwindTools.Export
-    local sectionWidth = math.max(620, math.min((page:GetWidth() or 800) - 40, 980))
-    local innerWidth = sectionWidth - 36
-    page.ProfileColumnCount = innerWidth >= 750 and 3 or 2
-    local function StyleMultiline(field)
-        local hovered, focused = false, false
-        local function Paint()
-            EXUI:SetControlSurface(field, 4,
-                (hovered or focused) and GC.inputHover or GC.input,
-                focused and GC.inputFocusBorder or (hovered and GC.inputHoverBorder or GC.inputBorder))
-        end
-        field.scrollFrame:HookScript("OnEnter", function() hovered = true; Paint() end)
-        field.scrollFrame:HookScript("OnLeave", function() hovered = false; Paint() end)
-        field.editBox:HookScript("OnEnter", function() hovered = true; Paint() end)
-        field.editBox:HookScript("OnLeave", function() hovered = false; Paint() end)
-        field.editBox:HookScript("OnEditFocusGained", function() focused = true; Paint() end)
-        field.editBox:HookScript("OnEditFocusLost", function() focused = false; Paint() end)
-        Paint()
+    local function Selection(field)
+        return EXUI:CreateSettingsV2Control({ controlType = "checkbox" }, function(context)
+            local key = context.scope.item.key
+            local binding = EXUI:CreateSettingsV2Binding("ExwindTools.ProfileManager", state, field)
+            binding.Read = function() return state[field][key] == true end
+            binding.Write = function(_, checked)
+                state[field][key] = checked
+                return true
+            end
+            return binding
+        end)
     end
-
-    local title = EXUI:CreateVisualFontString(page, EXFONTFRAME)
-    title:SetFont(ExwindTools.MAIN_FONT, 23, "OUTLINE")
-    title:SetPoint("TOPLEFT", page, "TOPLEFT", 20, -18)
-    title:SetText(L["配置管理"])
-    title:SetTextColor(unpack(GC.text))
-
-    local exportSection = CreateFrame("Frame", nil, page, "BackdropTemplate")
-    exportSection:SetSize(sectionWidth, 400)
-    exportSection:SetPoint("TOPLEFT", page, "TOPLEFT", 20, -74)
-    EXUI:SetControlSurface(exportSection, 10, GC.card, GC.cardBorder)
-    page.ProfileExportSection = exportSection
-    local exportTitle = EXUI:CreateVisualFontString(exportSection, EXFONTFRAME)
-    exportTitle:SetFont(ExwindTools.MAIN_FONT, 18, "OUTLINE")
-    exportTitle:SetPoint("TOPLEFT", exportSection, "TOPLEFT", 18, -17)
-    exportTitle:SetText(L["导出配置"])
-    exportTitle:SetTextColor(unpack(GC.text))
-
-    local nameWidth = math.floor((innerWidth - 16) * 0.55)
-    local authorWidth = innerWidth - nameWidth - 16
-    local nameInput = EXUI:CreateEditBox(exportSection, L["我的配置"], nameWidth, 30,
-        L["配置名称:"], { labelPos = "top" })
-    nameInput:SetPoint("TOPLEFT", exportSection, "TOPLEFT", 18, -76)
-    local authorInput = EXUI:CreateEditBox(exportSection, "", authorWidth, 30,
-        L["导出者:"], { labelPos = "top", placeholder = L["留空则使用当前名"] })
-    authorInput:SetPoint("TOPLEFT", nameInput, "TOPRIGHT", 16, 0)
-    local noteInput = EXUI:CreateEditBox(exportSection, "", innerWidth, 76,
-        L["备注说明:"], { labelPos = "top" })
-    noteInput:SetPoint("TOPLEFT", exportSection, "TOPLEFT", 18, -154)
-    StyleMultiline(noteInput)
-
-    local moduleLabel = EXUI:CreateVisualFontString(exportSection, EXFONTFRAME)
-    moduleLabel:SetFont(ExwindTools.MAIN_FONT, 14, "OUTLINE")
-    moduleLabel:SetPoint("TOPLEFT", exportSection, "TOPLEFT", 18, -257)
-    moduleLabel:SetText(L["选择导出模块:"])
-    moduleLabel:SetTextColor(unpack(GC.text))
-    local selectAllBtn = EXUI:CreateButton(exportSection, 62, 26, L["全选"], function()
-        local modules = Export:GetExportableModules()
-        for _, m in ipairs(modules) do state.exportSelected[m.key] = true end
-        EXUI:RefreshExportCheckboxes()
-    end, { variant = "secondary", compact = true })
-    selectAllBtn:SetPoint("LEFT", moduleLabel, "RIGHT", 16, 0)
-    local selectNoneBtn = EXUI:CreateButton(exportSection, 74, 26, L["全不选"], function()
+    owner.controls.exportSelected = Selection("exportSelected")
+    owner.controls.importSelected = Selection("importSelected")
+    owner.actions.selectAll = function(context)
+        for _, module in ipairs(Export:GetExportableModules()) do state.exportSelected[module.key] = true end
+        context:RefreshPage()
+    end
+    owner.actions.selectNone = function(context)
         wipe(state.exportSelected)
-        EXUI:RefreshExportCheckboxes()
-    end, { variant = "secondary", compact = true })
-    selectNoneBtn:SetPoint("LEFT", selectAllBtn, "RIGHT", 8, 0)
-
-    local exportList = CreateFrame("Frame", nil, exportSection)
-    exportList:SetSize(innerWidth, 1)
-    exportList:SetPoint("TOPLEFT", exportSection, "TOPLEFT", 18, -294)
-    EXUI.ExportListFrame = exportList
-    local exportBtn = EXUI:CreateButton(exportSection, 200, 36, L["生成导出字符串"], function()
-        local profileName = nameInput:GetText() or L["未命名"]
-        local authorName = authorInput:GetText() or ""
-        local note = noteInput:GetText() or ""
-        local result, err = Export:ExportModules(state.exportSelected, profileName, authorName, note)
+        context:RefreshPage()
+    end
+    owner.actions.export = function()
+        local profileName = state.profileName or L["未命名"]
+        local result, err = Export:ExportModules(state.exportSelected, profileName, state.authorName or "", state.note or "")
         if result then
             EXUI:ShowExportResultPopup(result, profileName)
         else
             print("|cffff0000[ExwindTools]|r " .. L["导出失败: "] .. (err or L["未知错误"]))
         end
-    end, { variant = "primary", compact = true })
-    exportBtn:SetPoint("BOTTOMRIGHT", exportSection, "BOTTOMRIGHT", -18, 18)
-    EXUI.ExportGenBtn = exportBtn
-
-    local importSection = CreateFrame("Frame", nil, page, "BackdropTemplate")
-    importSection:SetSize(sectionWidth, 550)
-    importSection:SetPoint("TOPLEFT", exportSection, "BOTTOMLEFT", 0, -18)
-    EXUI:SetControlSurface(importSection, 10, GC.card, GC.cardBorder)
-    EXUI.ImportSection = importSection
-    page.ProfileImportSection = importSection
-    local importTitle = EXUI:CreateVisualFontString(importSection, EXFONTFRAME)
-    importTitle:SetFont(ExwindTools.MAIN_FONT, 18, "OUTLINE")
-    importTitle:SetPoint("TOPLEFT", importSection, "TOPLEFT", 18, -17)
-    importTitle:SetText(L["导入配置"])
-    importTitle:SetTextColor(unpack(GC.text))
-
-    local importInput = EXUI:CreateEditBox(importSection, "", innerWidth, 96,
-        L["粘贴导入字符串:"], { labelPos = "top" })
-    importInput:SetPoint("TOPLEFT", importSection, "TOPLEFT", 18, -76)
-    StyleMultiline(importInput)
-    EXUI.ImportStringField = importInput
-    local parseBtn = EXUI:CreateButton(importSection, 120, 28, L["解析预览"], function()
-        local importDataInput = EXUI.ImportStringField:GetText()
-        local data, err = Export:ParseImportString(importDataInput)
+    end
+    owner.actions.parse = function()
+        local data, err = Export:ParseImportString(state.importString or "")
         if data then
             state.parsedData = data
             local summary = Export:GetImportSummary(data)
             wipe(state.importSelected)
-            for _, m in ipairs(summary.modules) do state.importSelected[m.key] = true end
+            for _, module in ipairs(summary.modules) do state.importSelected[module.key] = true end
             EXUI:RefreshImportPreview(summary)
             print("|cff00ff00[ExwindTools]|r " .. string.format(L["解析成功！包含 %d 个模块配置"], summary.moduleCount))
         else
@@ -2785,345 +2396,123 @@ function EXUI:ShowProfileManagerPage()
             EXUI:RefreshImportPreview(nil)
             print("|cffff0000[ExwindTools]|r " .. L["解析失败: "] .. (err or L["未知错误"]))
         end
-    end, { variant = "secondary", compact = true })
-    parseBtn:SetPoint("TOPLEFT", importSection, "TOPLEFT", 18, -192)
-
-    local previewFrame = CreateFrame("Frame", nil, importSection)
-    previewFrame:SetSize(innerWidth, 1)
-    previewFrame:SetPoint("TOPLEFT", importSection, "TOPLEFT", 18, -250)
-    EXUI.ImportPreviewFrame = previewFrame
-    local pName = EXUI:CreateEditBox(previewFrame, "", nameWidth, 30,
-        GC.markup.textDim .. L["配置名称:"] .. "|r", { labelPos = "top" })
-    pName:SetPoint("TOPLEFT", previewFrame, "TOPLEFT", 0, -22)
-    pName.editBox:Disable()
-    EXUI:ApplyControlAppearance(pName)
-    EXUI.ImportPreviewName = pName
-    local pAuthor = EXUI:CreateEditBox(previewFrame, "", authorWidth, 30,
-        GC.markup.textDim .. L["作者:"] .. "|r", { labelPos = "top" })
-    pAuthor:SetPoint("TOPLEFT", pName, "TOPRIGHT", 16, 0)
-    pAuthor.editBox:Disable()
-    EXUI:ApplyControlAppearance(pAuthor)
-    EXUI.ImportPreviewAuthor = pAuthor
-    local pNote = EXUI:CreateEditBox(previewFrame, "", innerWidth, 62,
-        GC.markup.textDim .. L["备注说明:"] .. "|r", { labelPos = "top" })
-    pNote:SetPoint("TOPLEFT", previewFrame, "TOPLEFT", 0, -94)
-    pNote.editBox:Disable()
-    EXUI:SetControlSurface(pNote, 4, GC.inputDisabled, GC.inputDisabledBorder)
-    EXUI.ImportPreviewNote = pNote
-    local importModLabel = EXUI:CreateVisualFontString(previewFrame, EXFONTFRAME)
-    importModLabel:SetFont(ExwindTools.MAIN_FONT, 14, "OUTLINE")
-    importModLabel:SetPoint("TOPLEFT", previewFrame, "TOPLEFT", 0, -184)
-    importModLabel:SetTextColor(unpack(GC.textDim))
-    EXUI.ImportPreviewLabel = importModLabel
-    local importList = CreateFrame("Frame", nil, previewFrame)
-    importList:SetSize(innerWidth, 1)
-    importList:SetPoint("TOPLEFT", previewFrame, "TOPLEFT", 0, -220)
-    EXUI.ImportListFrame = importList
-    local applyBtn = EXUI:CreateButton(importSection, 160, 36, L["应用导入"], function()
+    end
+    owner.actions.apply = function()
         if not state.parsedData then
             print("|cffff0000[ExwindTools]|r " .. L["请先解析导入字符串"])
             return
         end
         local count = Export:ApplyImport(state.parsedData, state.importSelected, "replace")
         if count > 0 then
-            StaticPopup_Show("EXWIND_IMPORT_SUCCESS", count)
+            EXUI:ShowDialog({
+                sourceAddon = "ExwindTools", sourceModule = L["配置分享"],
+                id = "EXWIND_IMPORT_SUCCESS", title = L["提示"],
+                text = string.format(L["导入成功！已导入 %d 个模块的配置。\n\n配置需要重载界面才能完全生效。"], count),
+                defaultButton = "reload", cancelButton = "later",
+                buttons = {
+                    { id = "later", text = L["稍后重载"], variant = "secondary" },
+                    { id = "reload", text = L["立即重载"], variant = "primary", onClick = function() C_UI.Reload() end },
+                },
+            })
         else
             print("|cffff8800[ExwindTools]|r " .. L["未导入任何模块 (可能未选中或数据为空)"])
         end
-    end, { variant = "primary", compact = true })
-    applyBtn:SetPoint("BOTTOMRIGHT", importSection, "BOTTOMRIGHT", -18, 18)
-
-    function page:RelayoutProfileManagerPage()
-        local width = math.max(560, math.min((self:GetWidth() or 800) - 40, 980))
-        if self.ProfileLayoutWidth == width then return end
-        self.ProfileLayoutWidth = width
-        local inner = width - 36
-        local columns = inner >= 750 and 3 or 2
-        self.ProfileColumnCount = columns
-        exportSection:SetWidth(width)
-        importSection:SetWidth(width)
-        local firstWidth = math.floor((inner - 16) * 0.55)
-        local secondWidth = inner - firstWidth - 16
-        local function ResizeField(field, fieldWidth)
-            field:SetWidth(fieldWidth)
-            if field.scrollFrame then
-                local scrollChild = field.scrollFrame:GetScrollChild()
-                if scrollChild then scrollChild:SetWidth(math.max(1, fieldWidth - 20)) end
-            end
-        end
-        ResizeField(nameInput, firstWidth)
-        ResizeField(authorInput, secondWidth)
-        ResizeField(noteInput, inner)
-        ResizeField(importInput, inner)
-        ResizeField(pName, firstWidth)
-        ResizeField(pAuthor, secondWidth)
-        ResizeField(pNote, inner)
-        exportList:SetWidth(inner)
-        previewFrame:SetWidth(inner)
-        importList:SetWidth(inner)
-        local function ArrangeCheckboxes(list)
-            local gap = 12
-            local cellWidth = math.floor((inner - (columns - 1) * gap) / columns)
-            local count = 0
-            for _, cb in ipairs({ list:GetChildren() }) do
-                local index = cb._profileIndex
-                if index then
-                    cb:SetSize(cellWidth, 28)
-                    cb:ClearAllPoints()
-                    cb:SetPoint("TOPLEFT", list, "TOPLEFT",
-                        ((index - 1) % columns) * (cellWidth + gap),
-                        -math.floor((index - 1) / columns) * 34)
-                    cb.label:SetWidth(math.max(1, cellWidth - 36))
-                    count = math.max(count, index)
-                end
-            end
-            local height = math.max(38, math.ceil(count / columns) * 34 + 6)
-            list:SetHeight(height)
-            return height
-        end
-        local exportHeight = ArrangeCheckboxes(exportList)
-        local importHeight = ArrangeCheckboxes(importList)
-        exportSection:SetHeight(294 + exportHeight + 66)
-        importSection:SetHeight(250 + 220 + importHeight + 64)
-        self:SetHeight(74 + exportSection:GetHeight() + 18 + importSection:GetHeight() + 28)
-        EXUI.RightScrollChild:SetHeight(self:GetHeight())
     end
-
-    EXUI:RefreshExportCheckboxes()
-    EXUI:RefreshImportPreview(nil)
-    page:RelayoutProfileManagerPage()
-    page:SetScript("OnSizeChanged", function(self)
-        self:RelayoutProfileManagerPage()
-    end)
+    local function Field(path, kind, label, extra)
+        local node = { id = "profile-" .. path, kind = "control", path = path, controlType = kind, label = label }
+        for key, value in pairs(extra or {}) do node[key] = value end
+        return node
+    end
+    local function Modules(prefix, source, name, selected)
+        return { id = prefix .. "-table", kind = "table", columns = {
+            { title = L["名称"] }, { title = "✓" },
+        }, children = {{ id = prefix .. "-modules", kind = "repeat", source = source,
+            template = { id = prefix .. "-row", kind = "row", children = {
+                { id = prefix .. "-name-cell", kind = "cell", children = {
+                    { id = prefix .. "-name", kind = "text", textSource = name },
+                } },
+                { id = prefix .. "-selected-cell", kind = "cell", children = {
+                    { id = prefix .. "-selected", kind = "control", controlType = "checkbox", ref = selected },
+                } },
+            } },
+        }} }
+    end
+    -- 上下两张卡：上面导出，下面导入。
+    local layout = { version = 2, cards = {
+        { id = "profile-export", kind = "card", title = L["导出配置"], children = {
+            Field("profileName", "input", L["配置名称:"], { size = "wide" }),
+            Field("authorName", "input", L["导出者:"], { size = "wide", description = L["留空则使用当前名"] }),
+            Field("note", "multiline", L["备注说明:"]),
+            { id = "profile-export-selection", kind = "setting", label = L["选择导出模块:"], children = {
+                { id = "profile-select-all", kind = "button", text = L["全选"], action = "selectAll" },
+                { id = "profile-select-none", kind = "button", text = L["全不选"], action = "selectNone" },
+            } },
+            Modules("profile-export", "exportModules", "exportModuleName", "exportSelected"),
+            { id = "profile-export-action", kind = "setting", label = L["导出配置"], children = {
+                { id = "profile-generate", kind = "button", text = L["生成导出字符串"], action = "export", presentation = "primary" },
+            } },
+        } },
+        { id = "profile-import", kind = "card", title = L["导入配置"], children = {
+            Field("importString", "multiline", L["粘贴导入字符串:"], { size = "tall" }),
+            { id = "profile-parse-action", kind = "setting", label = L["预览"], children = {
+                { id = "profile-parse", kind = "button", text = L["解析预览"], action = "parse" },
+            } },
+            Field("previewName", "input", L["配置名称:"], { size = "wide", enabled = "previewReadonly" }),
+            Field("previewAuthor", "input", L["作者:"], { size = "wide", enabled = "previewReadonly" }),
+            Field("previewNote", "multiline", L["备注说明:"], { enabled = "previewReadonly" }),
+            Field("previewVersion", "input", L["预览"], { size = "wide", enabled = "previewReadonly" }),
+            Modules("profile-import", "importModules", "importModuleName", "importSelected"),
+            { id = "profile-import-action", kind = "setting", label = L["导入配置"], children = {
+                { id = "profile-apply", kind = "button", text = L["应用导入"], action = "apply", presentation = "primary" },
+            } },
+        } },
+    } }
+    EXUI:MountModuleSettingsDeclarationV2(page, layout, owner, L["配置管理"], nil, EXUI.RightScrollFrame)
+    EXUI.RightScrollChild:SetHeight(page:GetHeight())
 end
 
--- =========================================================
--- 刷新导出模块复选框
--- =========================================================
 function EXUI:RefreshExportCheckboxes()
-    local Export = ExwindTools.Export
-    local state = EXUI.ProfileState
-    local parent = EXUI.ExportListFrame
-    if not parent then return end
-
-    local factory = _G.ExwindFactory
-    for _, child in ipairs({ parent:GetChildren() }) do
-        child._profileIndex = nil
-        factory:Release(child._fromPool, child)
-    end
-
-    local modules = Export:GetExportableModules()
-    local columns = parent:GetParent():GetParent().ProfileColumnCount or 3
-    local columnGap = 12
-    local columnWidth = math.floor((parent:GetWidth() - (columns - 1) * columnGap) / columns)
-    for index, m in ipairs(modules) do
-        local cb = EXUI:CreateCheckbox(parent, m.name, state.exportSelected[m.key] or false, function(checked)
-            state.exportSelected[m.key] = checked
-        end)
-        cb._profileIndex = index
-        cb:SetSize(columnWidth, 28)
-        cb:SetPoint("TOPLEFT", parent, "TOPLEFT",
-            ((index - 1) % columns) * (columnWidth + columnGap),
-            -math.floor((index - 1) / columns) * 34)
-        cb.label:SetWidth(math.max(1, columnWidth - 36))
-        cb.label:SetJustifyH("LEFT")
-        cb.label:SetWordWrap(false)
-    end
-
-    local rows = math.ceil(#modules / columns)
-    local listHeight = math.max(38, rows * 34 + 6)
-    parent:SetHeight(listHeight)
-    local page = parent:GetParent():GetParent()
-    page.ProfileExportSection:SetHeight(294 + listHeight + 66)
-    page:SetHeight(74 + page.ProfileExportSection:GetHeight() + 18
-        + page.ProfileImportSection:GetHeight() + 28)
-    EXUI.RightScrollChild:SetHeight(page:GetHeight())
+    local page = EXUI._InternalPageFrame
+    if EXUI.CurrentPage == "ProfileManager" and page and page._exV2Session then page._exV2Session:Refresh() end
 end
 
 function EXUI:RefreshImportPreview(summary)
     local state = EXUI.ProfileState
-    local parent = EXUI.ImportListFrame
-    if not parent then return end
-
-    local factory = _G.ExwindFactory
-    for _, child in ipairs({ parent:GetChildren() }) do
-        child._profileIndex = nil
-        factory:Release(child._fromPool, child)
-    end
-
-    if summary then
-        EXUI.ImportPreviewName:SetText(summary.profileName or L["未命名"])
-        EXUI.ImportPreviewAuthor:SetText(summary.author or L["未知"])
-        EXUI.ImportPreviewNote:SetText(summary.note or L["无备注说明"])
-        EXUI.ImportPreviewLabel:SetText("|cff00ff80" ..
-            L["解析成功预览:"] .. "|r " .. string.format("|cffaaaaaa(" .. L["版本: %s"] .. ")|r", summary.addonVersion))
-    else
-        EXUI.ImportPreviewName:SetText("")
-        EXUI.ImportPreviewAuthor:SetText("")
-        EXUI.ImportPreviewNote:SetText("")
-        EXUI.ImportPreviewLabel:SetText(GC.markup.placeholder .. L["等待解析..."] .. "|r")
-    end
-
-    local modules = summary and summary.modules or {}
-    local page = parent:GetParent():GetParent():GetParent()
-    local columns = page.ProfileColumnCount or 3
-    local columnGap = 12
-    local columnWidth = math.floor((parent:GetWidth() - (columns - 1) * columnGap) / columns)
-    for index, m in ipairs(modules) do
-        local labelText = m.name
-        if not m.exists then
-            labelText = "|cffff6666" .. labelText .. " (" .. L["未安装"] .. ")|r"
-        else
-            labelText = "|cff90ee90" .. labelText .. "|r"
-        end
-        local cb = EXUI:CreateCheckbox(parent, labelText, state.importSelected[m.key] or false, function(checked)
-            state.importSelected[m.key] = checked
-        end)
-        cb._profileIndex = index
-        cb:SetSize(columnWidth, 28)
-        cb:SetPoint("TOPLEFT", parent, "TOPLEFT",
-            ((index - 1) % columns) * (columnWidth + columnGap),
-            -math.floor((index - 1) / columns) * 34)
-        cb.label:SetWidth(math.max(1, columnWidth - 36))
-        cb.label:SetJustifyH("LEFT")
-        cb.label:SetWordWrap(false)
-    end
-
-    local rows = math.ceil(#modules / columns)
-    local listHeight = math.max(38, rows * 34 + 6)
-    parent:SetHeight(listHeight)
-    page.ProfileImportSection:SetHeight(250 + 220 + listHeight + 64)
-    page:SetHeight(74 + page.ProfileExportSection:GetHeight() + 18
-        + page.ProfileImportSection:GetHeight() + 28)
-    EXUI.RightScrollChild:SetHeight(page:GetHeight())
+    state.summary = summary
+    state.previewName = summary and (summary.profileName or L["未命名"]) or ""
+    state.previewAuthor = summary and (summary.author or L["未知"]) or ""
+    state.previewNote = summary and (summary.note or L["无备注说明"]) or ""
+    state.previewVersion = summary and string.format(L["版本: %s"], summary.addonVersion) or L["等待解析..."]
+    EXUI:RefreshExportCheckboxes()
 end
 
 -- =========================================================
 -- 导出结果弹窗
 -- =========================================================
 function EXUI:ShowExportResultPopup(exportString, profileName)
-    -- 创建或复用弹窗
-    if not EXUI.ExportPopup then
-        local popup = CreateFrame("Frame", "ExwindExportPopup", UIParent, "BackdropTemplate")
-        popup:SetSize(600, 350)
-        popup:SetPoint("CENTER")
-        popup:SetFrameStrata("FULLSCREEN_DIALOG")
-        popup:SetBackdrop(BACKDROP)
-        popup:SetBackdropColor(unpack(GC.popup))
-        popup:SetBackdropBorderColor(unpack(GC.popupBorder))
-        popup:EnableMouse(true)
-        popup:SetMovable(true)
-        popup:RegisterForDrag("LeftButton")
-        popup:SetScript("OnDragStart", popup.StartMoving)
-        popup:SetScript("OnDragStop", popup.StopMovingOrSizing)
-
-        local title = EXUI:CreateVisualFontString(popup, EXFONTFRAME)
-        title:SetFont(ExwindTools.MAIN_FONT, 25, "OUTLINE")
-        title:SetPoint("TOP", 0, -15)
-        title:SetText("|cff00ff80" .. L["导出成功"] .. "|r")
-        popup.Title = title
-
-        local closeBtn = CreateFrame("Button", nil, popup, "UIPanelCloseButton")
-        closeBtn:SetPoint("TOPRIGHT", -5, -5)
-        closeBtn:SetScript("OnClick", function() popup:Hide() end)
-
-        local hint = EXUI:CreateVisualFontString(popup, EXFONTFRAME)
-        hint:SetFontObject("GameFontHighlight")
-        hint:SetPoint("TOP", title, "BOTTOM", 0, -10)
-        hint:SetText(L["导出弹窗提示"])
-        hint:SetTextColor(unpack(GC.textDim))
-        popup.Hint = hint
-
-        -- 复制成功提示层
-        local copyHint = CreateFrame("Frame", nil, popup, "BackdropTemplate")
-        copyHint:SetSize(200, 60)
-        copyHint:SetPoint("CENTER", popup, "CENTER", 0, 0)
-        copyHint:SetFrameLevel(popup:GetFrameLevel() + 10)
-        copyHint:SetBackdrop(BACKDROP)
-        copyHint:SetBackdropColor(0.1, 0.3, 0.1, 0.95)
-        copyHint:SetBackdropBorderColor(0.3, 0.8, 0.3, 1)
-        copyHint:Hide()
-
-        local copyHintText = EXUI:CreateVisualFontString(copyHint, EXFONTFRAME)
-        copyHintText:SetFontObject("GameFontNormalLarge")
-        copyHintText:SetPoint("CENTER")
-        copyHintText:SetText("|cff00ff00✓ " .. L["已复制到剪贴板"] .. "|r")
-        popup.CopyHint = copyHint
-
-        local editFrame = CreateFrame("Frame", nil, popup, "BackdropTemplate")
-        editFrame:SetSize(560, 200)
-        editFrame:SetPoint("TOP", hint, "BOTTOM", 0, -10)
-        editFrame:SetBackdrop(BACKDROP_SIMPLE)
-        editFrame:SetBackdropColor(unpack(GC.popupSearch))
-
-        local scrollFrame = CreateFrame("ScrollFrame", nil, editFrame, "ScrollFrameTemplate")
-        scrollFrame:SetPoint("TOPLEFT", 5, -5)
-        scrollFrame:SetPoint("BOTTOMRIGHT", -18, 5)
-        ApplyModernScrollBarSkin(scrollFrame)
-
-        local editBox = CreateFrame("EditBox", nil, scrollFrame)
-        editBox:SetSize(530, 190)
-        editBox:SetFontObject("ChatFontNormal")
-        editBox:SetTextColor(unpack(GC.text))
-        editBox:SetAutoFocus(false)
-        editBox:SetMultiLine(true)
-        editBox:SetMaxLetters(999999)
-        editBox:EnableMouseWheel(true)
-        editBox:HookScript("OnMouseWheel", function(_, delta)
-            local onMouseWheel = scrollFrame:GetScript("OnMouseWheel")
-            if onMouseWheel then
-                onMouseWheel(scrollFrame, delta)
-            end
-        end)
-        scrollFrame:SetScrollChild(editBox)
-        popup.EditBox = editBox
-
-        -- Ctrl 键追踪
-        popup.lastCtrlDown = 0
-        popup:SetScript("OnUpdate", function(self)
-            if IsControlKeyDown() then
-                self.lastCtrlDown = GetTime()
-            end
-        end)
-
-        -- 监听 Ctrl+C
-        editBox:SetScript("OnKeyUp", function(self, key)
-            local wasCtrlDown = IsControlKeyDown() or (GetTime() - popup.lastCtrlDown < 0.5)
-            if wasCtrlDown and key == "C" then
-                self:ClearFocus()
-                -- 显示复制成功提示
-                popup.CopyHint:Show()
-                popup.CopyHint:SetAlpha(1)
+    return self:ShowDialog({
+        sourceAddon = "ExwindTools", sourceModule = L["配置分享"],
+        id = "EXWIND_EXPORT_RESULT", title = L["导出成功"] .. " - " .. profileName,
+        text = L["导出弹窗提示"], width = 600, movable = true, enterConfirms = false,
+        input = { text = exportString, multiline = true, readOnly = true, highlight = true, height = 200 },
+        cancelButton = "close",
+        buttons = {
+            { id = "select", text = L["全选复制"], variant = "secondary", close = false,
+                onClick = function(_, dialog) dialog.activeInput:SetFocus(); dialog.activeInput:HighlightText() end },
+            { id = "close", text = L["关闭"], variant = "primary" },
+        },
+        onShow = function(dialog)
+            local token = dialog._dialogToken
+            dialog.activeInput:SetScript("OnKeyUp", function(input, key)
+                if key ~= "C" or not IsControlKeyDown() then return end
+                input:ClearFocus()
+                dialog.body:SetText(L["已复制到剪贴板"])
                 C_Timer.After(0.6, function()
-                    popup:Hide()
-                    popup.CopyHint:Hide()
+                    if dialog._dialogToken == token then EXUI:HideDialog("EXWIND_EXPORT_RESULT") end
                 end)
-            end
-        end)
-
-        local selectBtn = EXUI:CreateSmallButton(popup, L["全选复制"], function()
-            editBox:SetFocus()
-            editBox:HighlightText()
-        end)
-        selectBtn:SetSize(100, 28)
-        selectBtn:SetPoint("BOTTOM", popup, "BOTTOM", -60, 15)
-
-        local closeBtn2 = EXUI:CreateSmallButton(popup, L["关闭"], function()
-            popup:Hide()
-        end)
-        closeBtn2:SetSize(80, 28)
-        closeBtn2:SetPoint("BOTTOM", popup, "BOTTOM", 60, 15)
-
-        EXUI.ExportPopup = popup
-    end
-
-    local popup = EXUI.ExportPopup
-    popup.EditBox:SetText(exportString)
-    popup.Title:SetText("|cff00ff80" .. L["导出成功"] .. "|r - " .. profileName)
-    popup.CopyHint:Hide()
-    popup:Show()
-    popup.EditBox:SetFocus()
-    popup.EditBox:HighlightText()
+            end)
+        end,
+    })
 end
 
 -- =========================================================
@@ -3146,8 +2535,3 @@ ExwindTools:WatchState("ClassID", "ExUI_Identity", OnIdentityStateChanged)
 ExwindTools:WatchState("ClassName", "ExUI_Identity", OnIdentityStateChanged)
 ExwindTools:WatchState("SpecID", "ExUI_Identity", OnIdentityStateChanged)
 ExwindTools:WatchState("SpecName", "ExUI_Identity", OnIdentityStateChanged)
-
--- 绑定 Grid 引擎到 EXUI (Grid 在此之前加载)
-if ExwindTools.Grid then
-    EXUI.Grid = ExwindTools.Grid
-end

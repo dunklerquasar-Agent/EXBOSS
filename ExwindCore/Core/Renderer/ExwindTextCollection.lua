@@ -98,6 +98,7 @@ local function ApplyTextPresentation(item, presentation)
         if presentation.secretText == true then widget:SetSecretText(presentation.text) else widget:SetText(presentation.text or "") end
     end
     if type(presentation.color) == "table" then widget:SetColor(presentation.color) end
+    if presentation.hasColorComponents == true then widget:SetColorComponents(presentation.colorComponents) end
     local bounds = item.declaredBounds
     if presentation.unboundedWidth == true then
         -- 无界公告仍保留 producer 的固定 declaredBounds：TextCollection 的多行
@@ -351,11 +352,15 @@ function EXUI:CreateTextCollection(parent, interactionMode, moduleKey, callbacks
         contentCenter = type(callbacks) == "table" and callbacks.contentCenter == true,
         itemsByID = {}, currentItems = {}, itemWidth = 1, itemHeight = 1 }
     collection.layout = EXUI:CreateWidgetLayout(parent, {})
+    EXUI:InitializeCollectionVisualAnimations(collection)
 
     function collection:AcquireItem(itemID)
         if type(itemID) ~= "string" or itemID == "" then error("TextCollection itemID must be non-empty string", 2) end
         local item = self.itemsByID[itemID]
-        if item then return item end
+        if item then
+            if self:IsItemVisualRetiring(itemID) then self:StopItemVisualAnimation(itemID) end
+            return item
+        end
         item = NewItem(self, itemID)
         self.itemsByID[itemID] = item
         return item
@@ -363,6 +368,7 @@ function EXUI:CreateTextCollection(parent, interactionMode, moduleKey, callbacks
 
     function collection:ApplyItem(item, presentation)
         if not item or not item.widget then error("TextCollection ApplyItem requires an acquired item", 2) end
+        if self:IsItemVisualRetiring(item.id) then self:StopItemVisualAnimation(item.id) end
         if type(presentation) ~= "table" then error("TextCollection presentation must be table", 2) end
         item.presentation, item.declaredBounds, item.semanticSlot = presentation, RequireDeclaredBounds(presentation), ResolveSlot(presentation)
         item.presentationScale = RequirePresentationScale(presentation)
@@ -372,10 +378,15 @@ function EXUI:CreateTextCollection(parent, interactionMode, moduleKey, callbacks
         item.bodyWidth, item.bodyHeight = baseWidth * item.presentationScale, baseHeight * item.presentationScale
         item.root:SetScale(item.presentationScale)
         item.root:SetSize(baseWidth, baseHeight)
+        if item.visualEffects then
+            EXUI:ApplyCollectionItemVisualEffects(item.root, item.visualEffects,
+                baseWidth, baseHeight, item.presentationScale)
+        end
+        if item._collectionClickSpec then EXUI:ApplyCollectionItemClick(item, item._collectionClickSpec) end
         item.root:Show()
         ConfigurePanelInteraction(self, item, presentation.interaction)
         item.regions:SetConfigContextID(presentation.regionConfigContextID)
-        item.regions:Apply(presentation.regionElements)
+        item.regions:Apply(presentation.regionElements, presentation.elementContent)
         return item
     end
 
@@ -389,7 +400,9 @@ function EXUI:CreateTextCollection(parent, interactionMode, moduleKey, callbacks
         if width then self.itemWidth, self.itemHeight = width, height end
         local wanted = {}
         for _, item in ipairs(items or {}) do wanted[item.id] = true end
-        for id, item in pairs(self.itemsByID) do if not wanted[id] then item.root:Hide() end end
+        for id, item in pairs(self.itemsByID) do
+            if not wanted[id] and not self:IsItemVisualRetiring(id) then item.root:Hide() end
+        end
         self.layout:ApplyStyle(CopyLayout(layout, self.contentCenter))
         self.layout:SetSemanticItems(items or {}, self.itemWidth, self.itemHeight)
         self.currentItems = items or {}
@@ -431,6 +444,23 @@ function EXUI:CreateTextCollection(parent, interactionMode, moduleKey, callbacks
     end
     function collection:GetBounds() return self.layout:GetBounds() end
     function collection:GetItems() return self.itemsByID end
+
+    function collection:SetItemVisualEffects(itemID, effects)
+        local item = self.itemsByID[itemID]
+        if not item or not item.root then return false end
+        item.visualEffects = type(effects) == "table" and effects or nil
+        local bounds = item.declaredBounds
+        EXUI:ApplyCollectionItemVisualEffects(item.root, item.visualEffects,
+            bounds.right - bounds.left, bounds.top - bounds.bottom, item.presentationScale)
+        return true
+    end
+
+    function collection:SetItemClickAction(itemID, spec)
+        local item = self.itemsByID[itemID]
+        if not item or not item.root then return false end
+        if self:IsItemVisualRetiring(itemID) then return false end
+        return EXUI:ApplyCollectionItemClick(item, spec)
+    end
     -- Runtime animations (for example a fading announcement) may adjust the
     -- item's root alpha without reaching through the collection into a private
     -- TextWidget/FontString tree.  The value is visual-only and never changes
@@ -446,6 +476,7 @@ function EXUI:CreateTextCollection(parent, interactionMode, moduleKey, callbacks
     function collection:PlayItemAlphaSequence(itemID, phases, onFinished)
         local item = self.itemsByID[itemID]
         if not item or not item.root or type(phases) ~= "table" or #phases == 0 then return false end
+        self:StopItemVisualAnimation(itemID)
         if item.alphaAnimation then
             item.alphaAnimation:SetScript("OnFinished", nil)
             item.alphaAnimation:Stop()
@@ -476,18 +507,22 @@ function EXUI:CreateTextCollection(parent, interactionMode, moduleKey, callbacks
     function collection:ReleaseItem(itemID)
         local item = self.itemsByID[itemID]
         if not item then return end
+        self:StopItemVisualAnimation(itemID)
         if item.alphaAnimation then
             item.alphaAnimation:SetScript("OnFinished", nil)
             item.alphaAnimation:Stop()
             item.alphaAnimation = nil
         end
         self.itemsByID[itemID] = nil
+        EXUI:ReleaseCollectionItemClick(item)
+        EXUI:ReleaseCollectionItemVisualEffects(item.root)
         ResetOverlay(item.interactionOverlay, true)
         if item.regions then item.regions:Release() end
         item.root:SetScale(1)
         item.widget:Release()
         ReleaseItemRoot(item.root)
         item.widget, item.root, item.presentation, item.declaredBounds, item.anchor, item.interactionOverlay, item.regions, item.presentationScale = nil, nil, nil, nil, nil, nil, nil, nil
+        item.visualEffects = nil
     end
     function collection:Release()
         for id in pairs(self.itemsByID) do self:ReleaseItem(id) end

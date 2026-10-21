@@ -32,9 +32,8 @@ local L = ExwindTools.L
 --=======================================================================
 ExwindTools.name = addonName
 -- [Core] 版本信息 (从 ExwindTools_Metadata.lua 读取)
-local meta = _G.ExwindTools_MetaData or { version = "DEV-Build", gridEngineVersion = "DEV" }
+local meta = _G.ExwindTools_MetaData or { version = "DEV-Build" }
 ExwindTools.VERSION = meta.version
-ExwindTools.GridEngineVersion = meta.gridEngineVersion
 
 --=======================================================================
 --========================== 全局字体准则 ===============================
@@ -428,7 +427,6 @@ _G.EXDebug = EXDebug
 --========================== 模块状态报告 ===============================
 --=======================================================================
 ExwindTools.ModuleStatus = {}
-ExwindTools.RegisteredLayouts = {}
 -- 模块默认值声明是源码唯一真源：模块作者可直接粘贴 Grid 导出的 EX_DEFAULTS。
 -- 它只在首次取得 ModuleDB 时编译为运行时扁平结构；运行时不存在第二份映射或转发。
 ExwindTools.ModuleDefaultDeclarations = {}
@@ -469,7 +467,6 @@ local function CheckLibs()
                 return LibStub and LibStub:GetLibrary("LibSharedMedia-3.0", true) ~= nil
             end
         },
-        { name = "LibAsync", check = function() return LibStub and LibStub:GetLibrary("LibAsync", true) ~= nil end },
         {
             name = "LibCustomGlow-1.0",
             check = function()
@@ -857,12 +854,6 @@ function ExwindTools:GetModuleDB(moduleKey, defaults)
     return storage.ModuleDB[moduleKey]
 end
 
-function ExwindTools:RegisterModuleLayout(moduleKey, layoutData)
-    if type(moduleKey) == "string" and type(layoutData) == "table" then
-        self.RegisteredLayouts[moduleKey] = layoutData
-    end
-end
-
 local function OwnerBelongsToModule(owner, moduleKey)
     if owner == moduleKey then
         return true
@@ -994,18 +985,12 @@ local function ShowMissingExwindToolsWarning()
         return false
     end
 
-    if not StaticPopupDialogs["EXWINDTOOLS_MISSING_WARNING"] then
-        StaticPopupDialogs["EXWINDTOOLS_MISSING_WARNING"] = {
-            text = "%s",
-            button1 = L["确定"],
-            timeout = 0,
-            whileDead = true,
-            hideOnEscape = true,
-            preferredIndex = 3,
-        }
-    end
-
-    StaticPopup_Show("EXWINDTOOLS_MISSING_WARNING", message)
+    ExwindTools.UI:ShowDialog({
+        sourceAddon = "ExwindCore", sourceModule = "ExwindTools",
+        id = "EXWINDTOOLS_MISSING_WARNING", title = L["提示"], text = message,
+        cancelButton = "close", defaultButton = "close",
+        buttons = { { id = "close", text = L["确定"], variant = "primary" } },
+    })
     ExwindTools:Print(message)
     return true
 end

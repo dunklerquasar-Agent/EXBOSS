@@ -1,10 +1,8 @@
 -- =============================================================
 -- ExwindPanelPreview.lua
--- 设置页 PreviewDock 的唯一会话封装。
---
--- 这里不创建第二套视觉树、不解释模块业务，也不拥有 Dock 的页面几何。
--- 它只把同一份 presentation 交给已存在的 Icon/Text/TimerBar Collection，
--- 固定 interactionMode="panel"、contentCenter=true，并统一生命周期。
+-- 设置页顶部预览外壳、背景与 Panel 会话的唯一封装。
+-- 页面只提供宿主，将既有 renderer 挂入公共 canvas；不得另造预览卡片或覆盖背景。
+-- 会话复用 Icon/Text/TimerBar Collection，固定 panel interaction 与生命周期。
 -- =============================================================
 
 local ExwindTools = _G.ExwindTools
@@ -16,6 +14,151 @@ if not ExwindTools or not ExwindTools.UI then return end
 local EXUI = ExwindTools.UI
 local GC = ExwindTools.GUIColors
 if not GC then error("ExwindGUIColor.lua must load before ExwindPanelPreview.lua") end
+
+local GM = ExwindTools.GUIMetrics
+if not GM then error("ExwindGUIMetrics.lua must load before ExwindPanelPreview.lua") end
+
+-- 背景只属于 Core 的当前 GUI 会话；不读取或写入任何模块配置/SavedVariables。
+-- 所有预览卡片共用一份颜色，canvas 与两侧 rail 透明，只由外壳填充一次。
+local previewFill = { GC.panel[1], GC.panel[2], GC.panel[3], 1 }
+local previewShells = setmetatable({}, { __mode = "k" })
+local previewLayout = {
+    shellTop = 6,
+    shellBottom = 8,
+    minimumShellHeight = ExwindTools.PanelTheme.Layout.PREVIEW_DOCK_HEIGHT,
+    shellInset = 10,
+    canvasGap = 8,
+    leftRailWidth = 162,
+    rightRailWidth = 162,
+}
+
+function EXUI:ApplyStandardPreviewShellStyle(shell, useBackdrop)
+    if not shell then error("standard preview requires a shell Frame", 2) end
+    local mode = useBackdrop and "backdrop" or previewShells[shell] or "surface"
+    previewShells[shell] = mode
+    if mode == "backdrop" then
+        -- 既有特殊预览保留原 Backdrop 几何，只共用颜色。
+        shell:SetBackdropColor(unpack(previewFill))
+        shell:SetBackdropBorderColor(unpack(GC.panelBorder))
+    else
+        self:SetControlSurface(shell, GM.radius.popup, previewFill, GC.panelBorder)
+    end
+    if shell._exPreviewBackgroundSwatch then
+        shell._exPreviewBackgroundSwatch:SetVertexColor(unpack(previewFill))
+    end
+end
+
+local function SetPreviewBackground(r, g, b)
+    previewFill[1], previewFill[2], previewFill[3] = r, g, b
+    for shell in pairs(previewShells) do
+        EXUI:ApplyStandardPreviewShellStyle(shell)
+    end
+end
+
+local function OpenPreviewBackgroundPicker()
+    local picker = _G.ColorPickerFrame
+    if not picker then return end
+    local originalR, originalG, originalB = previewFill[1], previewFill[2], previewFill[3]
+    -- 同一个暴雪取色器开启新事务前，结束原事务，避免旧取消回调遗留。
+    if picker:IsShown() then
+        if picker.cancelFunc then picker.cancelFunc(picker.previousValues) end
+        picker:Hide()
+        originalR, originalG, originalB = previewFill[1], previewFill[2], previewFill[3]
+    end
+    picker:SetupColorPickerAndShow({
+        r = originalR,
+        g = originalG,
+        b = originalB,
+        hasOpacity = false,
+        swatchFunc = function()
+            SetPreviewBackground(picker:GetColorRGB())
+        end,
+        cancelFunc = function()
+            SetPreviewBackground(originalR, originalG, originalB)
+        end,
+    })
+end
+
+local function CreatePreviewToolbar(shell)
+    local toolbar = CreateFrame("Frame", nil, shell)
+    toolbar:SetPoint("TOPLEFT", shell, "TOPLEFT", previewLayout.shellInset, -previewLayout.shellTop)
+    toolbar:SetPoint("BOTTOMRIGHT", shell, "BOTTOMRIGHT", -previewLayout.shellInset, previewLayout.shellBottom)
+
+    local label = EXUI:CreateVisualFontString(toolbar, EXFONTFRAME, "GameFontHighlightSmall")
+    label:SetText(L["背景"])
+    label:SetTextColor(unpack(GC.textDim))
+    local button = EXUI:CreateButton(toolbar, 26, 26, "",
+        OpenPreviewBackgroundPicker, { compact = true })
+    button:ClearAllPoints()
+    button:SetPoint("TOPRIGHT", toolbar, "TOPRIGHT", -6, -16)
+    local swatch = EXUI:CreateVisualTexture(button, EXBORDERFRAME)
+    swatch:SetTexture("Interface\\Buttons\\WHITE8X8")
+    swatch:SetPoint("TOPLEFT", button, "TOPLEFT", 4, -4)
+    swatch:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", -4, 4)
+    shell._exPreviewBackgroundSwatch = swatch
+    label:SetPoint("TOP", button, "TOP", 0, 15)
+    button:SetScript("OnEnter", function(self)
+        if GameTooltip then
+            GameTooltip:SetOwner(self, "ANCHOR_TOP")
+            GameTooltip:SetText(L["自定义预览背景"])
+            GameTooltip:Show()
+        end
+    end)
+    button:SetScript("OnLeave", function(self)
+        if GameTooltip and GameTooltip:GetOwner() == self then GameTooltip:Hide() end
+    end)
+    EXUI:ApplyStandardPreviewShellStyle(shell)
+    return toolbar
+end
+
+-- 唯一顶部预览工厂：固定外围 GC.panel，整张卡片内部共用 previewFill。
+function EXUI:CreateStandardTopPreview(host)
+    local row = CreateFrame("Frame", nil, host)
+    row:SetFrameLevel((host:GetFrameLevel() or 0) + 1)
+    local background = self:CreateVisualTexture(row, EXBASEFRAME)
+    background:SetAllPoints(row)
+    background:SetColorTexture(unpack(GC.panel))
+
+    local shell = CreateFrame("Frame", nil, row)
+    self:ApplyStandardPreviewShellStyle(shell)
+    local canvas = CreateFrame("Frame", nil, shell)
+    local toolbar = CreatePreviewToolbar(shell)
+    canvas:SetPoint("TOPLEFT", toolbar, "TOPLEFT", previewLayout.leftRailWidth + previewLayout.canvasGap, 0)
+    canvas:SetPoint("TOPRIGHT", toolbar, "TOPRIGHT", -(previewLayout.rightRailWidth + previewLayout.canvasGap), 0)
+    self:SetPanelStylePresetControlsHost(canvas, toolbar, "preview-rail")
+    canvas:SetHeight(self:GetStandardPreviewMinimumCanvasHeight())
+
+    local top = { row = row, shell = shell, canvas = canvas, toolbar = toolbar }
+    function top:SyncHeight()
+        local height = EXUI:GetStandardPreviewShellHeight(self.canvas:GetHeight())
+        self.shell:SetHeight(height)
+        self.row:SetHeight(height)
+        return height
+    end
+    function top:Place(parent, scrollChildWidth, topOffset)
+        local width = tonumber(scrollChildWidth) or tonumber(parent:GetWidth()) or 1
+        local available = math.max(1, width - 24)
+        self.row:SetParent(parent)
+        self.row:ClearAllPoints()
+        self.row:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, topOffset or 0)
+        self.row:SetPoint("TOPRIGHT", parent, "TOPRIGHT", 0, topOffset or 0)
+        self.shell:ClearAllPoints()
+        self.shell:SetPoint("TOP", self.row, "TOP", -4, 0)
+        self.shell:SetWidth(math.max(1, math.floor(available * 0.75 + 0.5)))
+        self:SyncHeight()
+    end
+    top:SyncHeight()
+    return top
+end
+
+function EXUI:GetStandardPreviewShellHeight(canvasHeight)
+    return math.max(previewLayout.minimumShellHeight,
+        previewLayout.shellTop + canvasHeight + previewLayout.shellBottom)
+end
+
+function EXUI:GetStandardPreviewMinimumCanvasHeight()
+    return previewLayout.minimumShellHeight - previewLayout.shellTop - previewLayout.shellBottom
+end
 
 -- GUI 修改 ModuleDB 后的唯一刷新注册表。注册项只能重套已经存在的
 -- presentation；创建、释放与完整 Render 仍只属于各自正常的生命周期入口。
@@ -287,31 +430,19 @@ local function ResolveBindingDB(source)
     return db
 end
 
-local function ResolveActiveMountedGrid(moduleKey, apiName)
-    local Grid = _G.ExwindGrid
-    local container = EXUI.ActivePageFrame
-    if not Grid or not container or type(Grid.GetMountedContainerStates) ~= "function" then
+-- 当前设置页（V2 会话或旧 Grid 挂载）必须属于本模块，交互才可写回并让页面回读。
+local function ResolveActivePage(moduleKey, apiName)
+    local page = EXUI:GetModulePage(moduleKey)
+    if not page then
         error((apiName or "standard preview interaction")
-            .. " has no active Grid container for " .. tostring(moduleKey), 3)
+            .. " has no active settings page for " .. tostring(moduleKey), 3)
     end
-    local mounted, owner = Grid:GetMountedContainerStates(container)
-    if type(mounted) ~= "table" or #mounted == 0 or not owner then
-        error((apiName or "standard preview interaction")
-            .. " cannot validate active Grid for " .. tostring(moduleKey), 3)
-    end
-    for _, entry in ipairs(mounted) do
-        if type(entry.state) ~= "table" or entry.state.moduleKey ~= moduleKey then
-            error((apiName or "standard preview interaction")
-                .. " active Grid module mismatch for " .. tostring(moduleKey), 3)
-        end
-    end
-    return Grid, container, mounted, owner
+    return page
 end
 
-local function RefreshActiveGridControls(moduleKey)
-    local Grid, container = ResolveActiveMountedGrid(moduleKey, "standard icon interaction")
-    if type(Grid.RefreshMountedValues) ~= "function" or not Grid:RefreshMountedValues(container) then
-        error("standard icon interaction cannot refresh active Grid for " .. moduleKey, 3)
+local function RefreshActivePageControls(page, moduleKey)
+    if not page:Refresh() then
+        error("standard icon interaction cannot refresh active settings page for " .. moduleKey, 3)
     end
 end
 
@@ -376,8 +507,7 @@ end
 
 -- Preset 只消费当前 Grid 已经解析完成的真实 DB 表与路径。它不猜 icon、
 -- timerGroup 等业务命名，也不会把 timeline/material/text 误认成可套样式的显示。
-local function ResolvePanelStylePresetBinding(panelPreview, moduleKey, declaredGUIKeys,
-        mounted, mountedOwner, Grid, container)
+local function ResolvePanelStylePresetBinding(panelPreview, moduleKey, declaredGUIKeys, page)
     local family, bodyType
     if panelPreview.kind == "Icon" then
         family, bodyType = "icon", "icongroup"
@@ -387,17 +517,11 @@ local function ResolvePanelStylePresetBinding(panelPreview, moduleKey, declaredG
         return nil
     end
 
-    local bodyWidget
-    for _, entry in ipairs(mounted) do
-        for _, widget in ipairs(entry.state.instances or {}) do
-            local element = widget and widget._exGridPixelElement
-            if type(element) == "table" and string.lower(tostring(element.type or "")) == bodyType
-                and type(widget._exCompositeDb) == "table" then
-                if bodyWidget then return nil end
-                bodyWidget = widget
-            end
-        end
+    local bodies = {}
+    for _, widget in ipairs(page:Components(bodyType)) do
+        if type(widget._exCompositeDb) == "table" then bodies[#bodies + 1] = widget end
     end
+    local bodyWidget = #bodies == 1 and bodies[1] or nil
     if not bodyWidget or bodyWidget._exCompositeDb.width == nil or bodyWidget._exCompositeDb.height == nil then
         return nil
     end
@@ -410,12 +534,11 @@ local function ResolvePanelStylePresetBinding(panelPreview, moduleKey, declaredG
     local fonts = {}
     for guiKey, declaration in pairs(declaredGUIKeys) do
         local slot = ResolvePanelStyleFontSlot(family, guiKey, declaration.textRole)
-        local widget = slot and Grid:FindMountedWidget(container, guiKey) or nil
-        local element = widget and widget._exGridPixelElement
-        if slot and not fonts[slot] and type(element) == "table"
-            and string.lower(tostring(element.type or "")) == "fontgroup"
-            and type(widget._exCompositeDb) == "table" then
-            fonts[slot] = widget._exCompositeDb
+        if slot and not fonts[slot] then
+            local widget, kind = page:Find(guiKey)
+            if widget and kind == "fontgroup" and type(widget._exCompositeDb) == "table" then
+                fonts[slot] = widget._exCompositeDb
+            end
         end
     end
 
@@ -423,8 +546,8 @@ local function ResolvePanelStylePresetBinding(panelPreview, moduleKey, declaredG
     return {
         family = family,
         moduleKey = moduleKey,
-        container = container,
-        gridOwner = mountedOwner,
+        container = page.container,
+        page = page,
         bodyWidget = bodyWidget,
         bodyDB = bodyWidget._exCompositeDb,
         changedPath = bodyPath == "" and "width" or (bodyPath .. ".width"),
@@ -503,11 +626,10 @@ function EXUI:BindStandardPreviewInteractions(panelPreview, options)
             error("GUI position group has no movable standard icon mapping: " .. tostring(guiKey), 2)
         end
     end
-    local Grid, container, mounted, mountedOwner = ResolveActiveMountedGrid(
-        moduleKey, "standard icon interaction")
+    local page = ResolveActivePage(moduleKey, "standard icon interaction")
+    local container = page.container
     for guiKey in pairs(declaredGUIKeys) do
-        local widget, state = Grid:FindMountedWidget(container, guiKey)
-        if not widget or not state or state.moduleKey ~= moduleKey then
+        if not page:Find(guiKey) then
             error("standard icon interaction GUI key is not rendered: " .. guiKey, 2)
         end
     end
@@ -522,10 +644,8 @@ function EXUI:BindStandardPreviewInteractions(panelPreview, options)
     local canvasLease = {}
     panelPreview._canvasCommitLease = canvasLease
     local function HandleIntent(intent, canvasTarget)
-        if EXUI.CurrentModule ~= moduleKey or EXUI.ActivePageFrame ~= container
-            or type(Grid.IsMountedOwnerCurrent) ~= "function"
-            or not Grid:IsMountedOwnerCurrent(container, mountedOwner) then
-            error("standard icon preview interaction belongs to a stale Grid mount: " .. moduleKey, 2)
+        if EXUI.CurrentModule ~= moduleKey or EXUI.ActivePageFrame ~= container or not page:IsCurrent() then
+            error("standard icon preview interaction belongs to a stale settings page: " .. moduleKey, 2)
         end
         if type(intent) ~= "table" then error("standard icon preview received malformed intent", 2) end
         local declaration = canvasTarget and canvasTarget.declaration or schema[intent.elementID]
@@ -562,7 +682,7 @@ function EXUI:BindStandardPreviewInteractions(panelPreview, options)
             -- 一次拖动是一个提交事务；记录其中一个真实 leaf path 即可。path
             -- 不参与字段路由，不能为同一笔 x/y 写入重复全量重套。
             EXUI:NotifyModuleValueChanged(moduleKey, declaration.position.x, "committed")
-            RefreshActiveGridControls(moduleKey)
+            RefreshActivePageControls(page, moduleKey)
             return true
         end
         error("standard icon preview unsupported intent: " .. tostring(intent.type), 2)
@@ -579,7 +699,7 @@ function EXUI:BindStandardPreviewInteractions(panelPreview, options)
         local function Current()
             return not self.released and self._canvasCommitLease == canvasLease
                 and EXUI.CurrentModule == moduleKey and EXUI.ActivePageFrame == container
-                and Grid:IsMountedOwnerCurrent(container, mountedOwner)
+                and page:IsCurrent()
         end
         return {
             isCurrent = Current,
@@ -601,8 +721,7 @@ function EXUI:BindStandardPreviewInteractions(panelPreview, options)
     end
     if type(panelPreview.BindStylePresets) == "function" then
         panelPreview:BindStylePresets(ResolvePanelStylePresetBinding(
-            panelPreview, moduleKey, declaredGUIKeys,
-            mounted, mountedOwner, Grid, container))
+            panelPreview, moduleKey, declaredGUIKeys, page))
     end
     return panelPreview
 end
@@ -698,16 +817,9 @@ local function HidePanelResizeTooltip(handle)
 end
 
 local function RefreshPanelResizeControls(moduleKey)
-    local Grid, container = _G.ExwindGrid, EXUI.ActivePageFrame
-    if EXUI.CurrentModule ~= moduleKey or not Grid or not container
-        or type(Grid.GetMountedContainerStates) ~= "function"
-        or type(Grid.RefreshMountedValues) ~= "function" then return false end
-    local mounted, owner = Grid:GetMountedContainerStates(container)
-    if not owner or type(mounted) ~= "table" or #mounted == 0 then return false end
-    for _, entry in ipairs(mounted) do
-        if type(entry.state) ~= "table" or entry.state.moduleKey ~= moduleKey then return false end
-    end
-    return Grid:RefreshMountedValues(container) == true
+    if EXUI.CurrentModule ~= moduleKey then return false end
+    local page = EXUI:GetModulePage(moduleKey)
+    return page ~= nil and page:Refresh()
 end
 
 local function CreatePanelResizeTexture(handle, r, g, b, a)
@@ -951,8 +1063,7 @@ local function CreatePanelPresetThumbnail(parent, width, height)
     local view = CreateFrame("Frame", nil, parent, "BackdropTemplate")
     view:SetSize(width, height)
     view:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
-    view:SetBackdropColor(unpack(GC.card))
-    view:SetBackdropBorderColor(unpack(GC.panelBorder))
+    EXUI:ApplyStandardPreviewShellStyle(view, true)
     if type(view.SetClipsChildren) == "function" then view:SetClipsChildren(true) end
     local host = CreateFrame("Frame", nil, view)
     host:SetPoint("CENTER", view, "CENTER", 0, 0)
@@ -983,12 +1094,30 @@ local function BuildPanelPresetFontStyle(presetStyle, currentStyle, includeLSMFo
     return style
 end
 
-local function ExpandPanelPresetBounds(bounds, style, content)
+local function ExpandPanelPresetBounds(bounds, style, content, slot)
     if type(style) ~= "table" then return end
     local size = math.max(8, tonumber(style.size) or 14)
     local width = math.max(size * 1.5, size * math.max(1, #tostring(content or "")) * 0.58)
     local height = size * 1.35
     local x, y = tonumber(style.x) or 0, tonumber(style.y) or 0
+    if slot then
+        -- IconWidget's label is TOP -> body.BOTTOM, stacks are BOTTOMRIGHT,
+        -- and countdown is centered. Account for the slot before font offsets.
+        local slotWidth, slotHeight = slot.width or width, slot.height or height
+        if (style.autoWidth == false or style.fixedWidthEnabled == true) and (tonumber(style.fixedWidth) or 0) > 0 then
+            slotWidth = tonumber(style.fixedWidth)
+        end
+        local centerX, centerY = slot.x or 0, slot.y or 0
+        if slot.point == "TOP" then centerY = centerY - slotHeight * .5
+        elseif slot.point == "BOTTOMRIGHT" then
+            centerX, centerY = centerX - slotWidth * .5, centerY + slotHeight * .5
+        end
+        if style.justifyH == "LEFT" then centerX = centerX + (width - slotWidth) * .5
+        elseif style.justifyH == "RIGHT" then centerX = centerX + (slotWidth - width) * .5 end
+        if style.justifyV == "TOP" then centerY = centerY + (slotHeight - height) * .5
+        elseif style.justifyV == "BOTTOM" then centerY = centerY + (height - slotHeight) * .5 end
+        x, y = x + centerX, y + centerY
+    end
     bounds.left, bounds.right = math.min(bounds.left, x - width * .5), math.max(bounds.right, x + width * .5)
     bounds.bottom, bounds.top = math.min(bounds.bottom, y - height * .5), math.max(bounds.top, y + height * .5)
 end
@@ -1021,9 +1150,12 @@ local function RenderIconPanelPresetThumbnail(view, moduleKey, preset, currentFo
     local timeStyle = BuildPanelPresetFontStyle(preset.fonts.time, currentFonts.time, includeLSMFont)
     local stacksStyle = BuildPanelPresetFontStyle(preset.fonts.stacks, currentFonts.stacks, includeLSMFont)
     local bounds = { left = -width * .5, right = width * .5, bottom = -height * .5, top = height * .5 }
-    ExpandPanelPresetBounds(bounds, labelStyle, "888K")
-    ExpandPanelPresetBounds(bounds, timeStyle, "8.2")
-    ExpandPanelPresetBounds(bounds, stacksStyle, "3")
+    ExpandPanelPresetBounds(bounds, labelStyle, "888K", {
+        point = "TOP", x = 0, y = -height * .5 + 2, width = width,
+        height = math.max(1, tonumber(labelStyle and labelStyle.height) or 20),
+    })
+    ExpandPanelPresetBounds(bounds, timeStyle, "8.2", { width = width, height = height })
+    ExpandPanelPresetBounds(bounds, stacksStyle, "3", { point = "BOTTOMRIGHT", x = width * .5, y = -height * .5 })
 
     local collection = EXUI:CreateIconCollection(view.renderHost, "panel", moduleKey, { contentCenter = true })
     local item = collection:AcquireItem("panel-style-preset")
@@ -1533,18 +1665,31 @@ local function CreatePanelPreview(kind, dock, moduleKey, callbacks, factory)
         if previewRail then
             controls.editMode = controls.editMode == true and #customPresets > 0
             local columnWidth = 74
-            controls.addButton:SetSize(columnWidth, 24)
-            controls.editButton:SetSize(columnWidth, 24)
+            -- 新增/编辑两列放不下文字时上下排成整行，不截断。
+            controls.addButton:SetText(L["新增"] or "新增")
+            controls.editButton:SetText(L["编辑"] or "编辑")
+            local stacked = math.max(controls.addButton:GetFontString():GetUnboundedStringWidth(),
+                controls.editButton:GetFontString():GetUnboundedStringWidth())
+                + GM.space.compactButtonPaddingX * 2 > columnWidth
+            local actionWidth = stacked and (columnWidth * 2 + 4) or columnWidth
+            controls.addButton:SetSize(actionWidth, 24)
+            controls.editButton:SetSize(actionWidth, 24)
             controls.builtinButtons.A:SetSize(columnWidth, 22)
             controls.builtinButtons.B:SetSize(columnWidth, 22)
             controls.addButton:SetPoint("TOPLEFT", controls.bar, "TOPLEFT", 0, 0)
-            controls.editButton:SetPoint("LEFT", controls.addButton, "RIGHT", 4, 0)
-            controls.builtinButtons.A:SetPoint("TOPLEFT", controls.addButton, "BOTTOMLEFT", 0, -4)
+            if stacked then
+                controls.editButton:SetPoint("TOPLEFT", controls.addButton, "BOTTOMLEFT", 0, -4)
+            else
+                controls.editButton:SetPoint("LEFT", controls.addButton, "RIGHT", 4, 0)
+            end
+            controls.builtinButtons.A:SetPoint("TOPLEFT", stacked and controls.editButton or controls.addButton,
+                "BOTTOMLEFT", 0, -4)
             controls.builtinButtons.B:SetPoint("LEFT", controls.builtinButtons.A, "RIGHT", 4, 0)
             controls.builtinButtons.A:SetText(L["样式 A"] or "样式 A")
             controls.builtinButtons.B:SetText(L["样式 B"] or "样式 B")
 
-            controls.bar:SetSize(152, #customPresets > 2 and 110 or (#customPresets > 0 and 78 or 50))
+            controls.bar:SetSize(152, (#customPresets > 2 and 110 or (#customPresets > 0 and 78 or 50))
+                + (stacked and 28 or 0))
             for index = 1, MAX_CUSTOM_STYLE_PRESETS do
                 local preset = customPresets[index]
                 local button = controls.buttons[index]
@@ -1734,14 +1879,11 @@ local function CreatePanelPreview(kind, dock, moduleKey, callbacks, factory)
     function session:IsStylePresetSessionCurrent()
         local descriptor = self.stylePresetDescriptor
         local controls = self.stylePresetControls
-        local Grid = _G.ExwindGrid
         local familyMatches = descriptor and ((descriptor.family == "icon" and self.kind == "Icon")
             or (descriptor.family == "timerbar" and (self.kind == "TimerBar" or self.kind == "StandardTimerBar")))
         return self.released ~= true and familyMatches and controls and controls.owner == self
             and descriptor.moduleKey == self.moduleKey and EXUI.CurrentModule == self.moduleKey
-            and EXUI.ActivePageFrame == descriptor.container and Grid
-            and type(Grid.IsMountedOwnerCurrent) == "function"
-            and Grid:IsMountedOwnerCurrent(descriptor.container, descriptor.gridOwner)
+            and EXUI.ActivePageFrame == descriptor.container and descriptor.page:IsCurrent()
             and descriptor.bodyWidget._exCompositeDb == descriptor.bodyDB
     end
 
@@ -1871,7 +2013,7 @@ local function CreatePanelPreview(kind, dock, moduleKey, callbacks, factory)
             token = self.stylePresetToken,
             moduleKey = self.moduleKey,
             container = descriptor.container,
-            gridOwner = descriptor.gridOwner,
+            page = descriptor.page,
         }
         local presetName = type(preset.name) == "string" and preset.name or (L["样式 "] .. slot)
         local actionTitle = action == "delete" and L["删除 "] or (action == "add" and L["新增 "] or L["应用 "])
@@ -1905,7 +2047,7 @@ local function CreatePanelPreview(kind, dock, moduleKey, callbacks, factory)
         return self:IsStylePresetSessionCurrent() and type(pending) == "table" and type(descriptor) == "table"
             and pending.token == self.stylePresetToken
             and pending.moduleKey == self.moduleKey and pending.container == descriptor.container
-            and pending.gridOwner == descriptor.gridOwner
+            and pending.page == descriptor.page
     end
 
     function session:ApplyStylePreset(slot, includeLSMFont)
@@ -1922,7 +2064,7 @@ local function CreatePanelPreview(kind, dock, moduleKey, callbacks, factory)
         -- 整个预设是一笔提交：无论覆盖多少字段都只触发一次正式重绘，随后
         -- 当前 Grid 从同一份 DB 回读一次，绝不形成逐字段刷新风暴。
         EXUI:NotifyModuleValueChanged(self.moduleKey, descriptor.changedPath, "committed")
-        RefreshActiveGridControls(self.moduleKey)
+        RefreshActivePageControls(descriptor.page, self.moduleKey)
         return true
     end
 
@@ -2438,7 +2580,7 @@ local function ReleaseTimelineRoot(root)
     root.track:Hide(); root.track:ClearAllPoints(); root.track:SetTexture(nil)
     if root.trackBorder then root.trackBorder:SetBackdrop(nil); root.trackBorder:Hide(); root.trackBorder:ClearAllPoints() end
     root.fiveSecondLine:Hide(); root.fiveSecondLine:ClearAllPoints(); root.fiveSecondLine:SetTexture(nil)
-    root:Hide(); root:ClearAllPoints(); root:SetParent(UIParent)
+    root:Hide(); root:ClearAllPoints(); root:SetScale(1); root:SetParent(UIParent)
     table.insert(timelineRootPool, root)
 end
 
@@ -2662,7 +2804,7 @@ local function ConfigureTimelineOverlay(session, node, key, spec, region, label)
         local db = session.configRoot
         local baseX = ReadDBPath(db, position.x, "timeline interaction " .. elementID)
         local baseY = ReadDBPath(db, position.y, "timeline interaction " .. elementID)
-        local scale = (UIParent and UIParent:GetEffectiveScale()) or 1
+        local scale = session.root:GetEffectiveScale()
         if scale <= 0 then scale = 1 end
         local cursorX, cursorY = GetCursorPosition()
         button._timelineDrag = { scale = scale, cursorX = cursorX / scale, cursorY = cursorY / scale,
@@ -2704,26 +2846,30 @@ local function ConfigureTimelineOverlay(session, node, key, spec, region, label)
     overlay:Show()
 end
 
-local function AddTimelineBounds(bounds, region)
+local function AddTimelineBounds(bounds, region, coordinateScale)
     if not region or (region.IsShown and not region:IsShown()) then return end
     local left, right, top, bottom = region:GetLeft(), region:GetRight(), region:GetTop(), region:GetBottom()
     if not (left and right and top and bottom) then return end
+    if coordinateScale then
+        local scale = region:GetEffectiveScale() / coordinateScale
+        left, right, top, bottom = left * scale, right * scale, top * scale, bottom * scale
+    end
     bounds.left = bounds.left and math.min(bounds.left, left) or left
     bounds.right = bounds.right and math.max(bounds.right, right) or right
     bounds.top = bounds.top and math.max(bounds.top, top) or top
     bounds.bottom = bounds.bottom and math.min(bounds.bottom, bottom) or bottom
 end
 
-local function GetTimelineBounds(root, nodesByID)
+local function GetTimelineBounds(root, nodesByID, coordinateScale)
     local bounds = {}
-    AddTimelineBounds(bounds, root)
-    AddTimelineBounds(bounds, root and root.track)
-    AddTimelineBounds(bounds, root and root.fiveSecondLine)
+    AddTimelineBounds(bounds, root, coordinateScale)
+    AddTimelineBounds(bounds, root and root.track, coordinateScale)
+    AddTimelineBounds(bounds, root and root.fiveSecondLine, coordinateScale)
     for _, node in pairs(nodesByID or {}) do
-        AddTimelineBounds(bounds, node)
-        AddTimelineBounds(bounds, node.icon)
-        for _, text in pairs(node.texts or {}) do AddTimelineBounds(bounds, text) end
-        for _, icon in pairs(node.alertIcons or {}) do AddTimelineBounds(bounds, icon) end
+        AddTimelineBounds(bounds, node, coordinateScale)
+        AddTimelineBounds(bounds, node.icon, coordinateScale)
+        for _, text in pairs(node.texts or {}) do AddTimelineBounds(bounds, text, coordinateScale) end
+        for _, icon in pairs(node.alertIcons or {}) do AddTimelineBounds(bounds, icon, coordinateScale) end
     end
     if not bounds.left then
         return { width = root:GetWidth() or 1, height = root:GetHeight() or 1 }
@@ -2734,6 +2880,30 @@ local function GetTimelineBounds(root, nodesByID)
 end
 
 local function FitTimelineRootToDock(session, timeline, anchor, timelineX, timelineY)
+    if timeline.fit ~= nil and timeline.fit ~= "contain" then error("timeline.fit must be contain", 3) end
+    if timeline.fit == "contain" then
+        local dock, root = session.dock, session.root
+        local left, right, top, bottom = dock:GetLeft(), dock:GetRight(), dock:GetTop(), dock:GetBottom()
+        if not (left and right and top and bottom) then return end
+        local coordinateScale = dock:GetEffectiveScale()
+        local bounds = GetTimelineBounds(root, session.nodesByID, coordinateScale)
+        if not bounds.left then return end
+        local inset = 8
+        local scale = math.min(1, math.max(1, right - left - inset * 2) / bounds.width,
+            math.max(1, top - bottom - inset * 2) / bounds.height)
+        root:SetScale(scale)
+        bounds = GetTimelineBounds(root, session.nodesByID, coordinateScale)
+        local function Shift(minimum, maximum, low, high)
+            local minShift, maxShift = minimum - low, maximum - high
+            if minShift <= maxShift then return math.min(maxShift, math.max(minShift, 0)) end
+            return (minShift + maxShift) * 0.5
+        end
+        local shiftX = Shift(left + inset, right - inset, bounds.left, bounds.right)
+        local shiftY = Shift(bottom + inset, top - inset, bounds.bottom, bounds.top)
+        root:ClearAllPoints()
+        root:SetPoint(anchor, dock, anchor, timelineX + shiftX / scale, timelineY + shiftY / scale)
+        return
+    end
     -- 部分时间轴的语义根（BunBar）就是轨道中心：名称/Atlas 可以向外延伸，
     -- 却不能反过来把模块中心或图标中心推离固定锚点。
     if timeline.lockAnchor == true then return end
@@ -2872,12 +3042,22 @@ function EXUI:CreateStandardTimelinePanelPreview(dock, moduleKey)
         self.intentHandler = nil
     end
 
+    function session:FitToDock()
+        local timeline = self.lastTimeline
+        if self.released or not timeline or timeline.fit ~= "contain" then return end
+        self.root:SetScale(1)
+        self.root:ClearAllPoints()
+        self.root:SetPoint(timeline.anchor or "CENTER", self.dock, timeline.anchor or "CENTER", timeline.x or 0, timeline.y or 0)
+        FitTimelineRootToDock(self, timeline, timeline.anchor or "CENTER", timeline.x or 0, timeline.y or 0)
+    end
+
     function session:Render(timeline, entries)
         if self.released then error("Timeline panel preview is released", 2) end
         if type(timeline) ~= "table" or type(entries) ~= "table" then
             error("Timeline panel preview Render requires timeline and entries tables", 2)
         end
         self.lastTimeline, self.lastEntries = timeline, entries
+        root:SetScale(1)
         RequireTimelineNumber(timeline.width, "timeline.width", 3, true)
         RequireTimelineNumber(timeline.height, "timeline.height", 3, true)
         -- Omission is the only supported default.  A string/boolean/etc. must
@@ -2966,8 +3146,18 @@ function EXUI:CreateStandardTimelinePanelPreview(dock, moduleKey)
         root:Show()
         -- A declaration may deliberately extend name/alert geometry beyond the
         -- semantic track.  Fit the complete visual union rather than guessing
-        -- with track width, so an external-left dock never cuts off text.
+        -- with track width, so the standard canvas never cuts off text.
         FitTimelineRootToDock(self, timeline, anchor, timelineX, timelineY)
+        if timeline.fit == "contain" then
+            self.dock._exTimelineFitSession = self
+            if not self.dock._exTimelineFitHooked then
+                self.dock._exTimelineFitHooked = true
+                self.dock:HookScript("OnSizeChanged", function(host)
+                    local current = host._exTimelineFitSession
+                    if current then current:FitToDock() end
+                end)
+            end
+        end
         return self
     end
 
@@ -3006,6 +3196,7 @@ function EXUI:CreateStandardTimelinePanelPreview(dock, moduleKey)
         end
 
         local root = self.root
+        root:SetScale(1)
         root:ClearAllPoints()
         root:SetPoint(anchor, self.dock, anchor, timelineX, timelineY)
         root:SetSize(timeline.width, timeline.height)
@@ -3026,12 +3217,14 @@ function EXUI:CreateStandardTimelinePanelPreview(dock, moduleKey)
     -- omitted from the declaration has no region to patch and must wait for mouse-up.
     function session:GetBounds()
         if self.released or not self.root then return nil end
-        return GetTimelineBounds(self.root, self.nodesByID)
+        return GetTimelineBounds(self.root, self.nodesByID,
+            self.lastTimeline and self.lastTimeline.fit == "contain" and self.dock:GetEffectiveScale() or nil)
     end
 
     function session:Release()
         if self.released then return end
         self.released = true
+        if self.dock._exTimelineFitSession == self then self.dock._exTimelineFitSession = nil end
         self:ClearIntentHandler()
         for itemID, node in pairs(self.nodesByID) do
             self.nodesByID[itemID] = nil
